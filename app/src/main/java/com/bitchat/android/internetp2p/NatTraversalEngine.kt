@@ -122,6 +122,10 @@ class NatTraversalEngine(
             TAG,
             "NAT probe: type=${p.natType} mapped=${p.mappedAddress} ipv6=${p.ipv6Global} tcpPort=${p.tcpPort}"
         )
+        P2pEventLog.log(
+            "本机 NAT 探测：类型=${p.natType} 公网端点=${p.mappedAddress ?: "无(STUN失败)"} " +
+                "IPv6=${p.ipv6Global?.address?.hostAddress ?: "无"} 端口=${p.tcpPort}"
+        )
         p
     }
 
@@ -138,6 +142,7 @@ class NatTraversalEngine(
         // Tier 1: IPv6 direct TCP (both peers have global IPv6).
         if (peerIpv6 != null && local.ipv6Global != null) {
             Log.i(TAG, "Tier 1: IPv6 direct to ${peerIpv6.address.hostAddress}")
+            P2pEventLog.log("Tier 1：尝试 IPv6 直连 ${peerIpv6.address.hostAddress}")
             val link = tryTcpConnect(
                 target = InetSocketAddress(peerIpv6.address, peer.tcpPort),
                 peerNonce = peer.nonce,
@@ -145,18 +150,32 @@ class NatTraversalEngine(
                 accept = true
             )
             if (link != null) return link
+            P2pEventLog.log("Tier 1 失败：IPv6 直连未建立")
+        } else {
+            P2pEventLog.log(
+                "Tier 1 跳过：IPv6 直连不可用（本机=${local.ipv6Global?.address?.hostAddress ?: "无"} " +
+                    "对方=${peerIpv6?.address?.hostAddress ?: "无"}）"
+            )
         }
 
         // Tier 2: UDP hole punch.
         if (local.natType.udpPunchViable && peerMapped != null) {
             Log.i(TAG, "Tier 2: UDP punch to $peerMapped")
+            P2pEventLog.log("Tier 2：尝试 UDP 打洞 → $peerMapped")
             val link = tryUdpPunch(socket, peer, onFrame)
             if (link != null) return link
+            P2pEventLog.log("Tier 2 失败：UDP 打洞未成功")
+        } else {
+            P2pEventLog.log(
+                "Tier 2 跳过：UDP 打洞不可行（NAT=${local.natType} " +
+                    "对方公网端点=${peerMapped ?: "无"}）"
+            )
         }
 
         // Tier 3: TCP simultaneous-open against the peer's mapped endpoint.
         if (peerMapped != null) {
             Log.i(TAG, "Tier 3: TCP simultaneous-open to $peerMapped")
+            P2pEventLog.log("Tier 3：尝试 TCP 同时打开 → $peerMapped")
             val link = tryTcpConnect(
                 target = peerMapped,
                 peerNonce = peer.nonce,
@@ -164,9 +183,13 @@ class NatTraversalEngine(
                 accept = true
             )
             if (link != null) return link
+            P2pEventLog.log("Tier 3 失败：TCP 同时打开未成功")
+        } else {
+            P2pEventLog.log("Tier 3 跳过：对方无公网端点（无法打洞）")
         }
 
         Log.w(TAG, "All direct tiers failed for ${peer.nonce.take(8)}; caller falls back to Nostr")
+        P2pEventLog.log("❌ 全部直连方案失败，将走 Nostr 兜底")
         return null
     }
 
