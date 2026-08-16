@@ -31,6 +31,36 @@ object InternetP2pSignaling {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     /**
+     * Dedup window for inbound control messages. Field logs show the same
+     * OFFER/ANSWER (identical nonce) being delivered many times - Nostr relay
+     * redelivery plus our own re-answers create a storm that makes every
+     * duplicate run connectToPeer/establish against the shared sockets. Key:
+     * "<senderPubkey>|<nonce>"; entries older than the window are ignored.
+     */
+    private val seenControlKeys = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private const val CONTROL_DEDUP_WINDOW_MS = 60_000L
+
+    /**
+     * Returns true when this (sender, nonce) pair was processed within the
+     * dedup window and should be ignored.
+     */
+    private fun isDuplicateControl(senderPubkey: String, nonce: String): Boolean {
+        val key = "$senderPubkey|$nonce"
+        val now = System.currentTimeMillis()
+        val last = seenControlKeys[key]
+        if (last != null && now - last < CONTROL_DEDUP_WINDOW_MS) {
+            return true
+        }
+        seenControlKeys[key] = now
+        // Opportunistic pruning so the map cannot grow unboundedly.
+        if (seenControlKeys.size > 512) {
+            val cutoff = now - CONTROL_DEDUP_WINDOW_MS
+            seenControlKeys.entries.removeAll { it.value < cutoff }
+        }
+        return false
+    }
+
+    /**
      * Lazily ensures the transport exists: if the mesh service has not wired
      * it up yet (e.g. the foreground service did not start), create it via the
      * holder, which also attaches this signaling object. Safe to call from the
@@ -80,6 +110,13 @@ object InternetP2pSignaling {
             Log.w(TAG, "Dropping P2P signaling (transport not attached)")
             return
         }
+        // Storm guard: relays redeliver DMs and both sides re-answer, so the
+        // same (sender, nonce) control message can arrive many times. Only
+        // process the first copy within the dedup window.
+        if (isDuplicateControl(senderPubkey, msg.candidate.nonce)) {
+            Log.d(TAG, "Ignoring duplicate ${msg.kind} from ${senderPubkey.take(8)}…")
+            return
+        }
         val peerID = resolvePeerID(senderPubkey) ?: run {
             Log.w(TAG, "No peerID known for sender; ignoring P2P signaling")
             return
@@ -120,11 +157,13 @@ object InternetP2pSignaling {
                         sendControl(senderPubkey, answer)
                     }
                     t.connectToPeer(peerID, msg.candidate)
+                    announceConnectedWhenUp(t, peerID, senderPubkey)
                 }
             }
             P2pControlMessage.Kind.ANSWER,
             P2pControlMessage.Kind.CANDIDATE -> {
                 t.connectToPeer(peerID, msg.candidate)
+                announceConnectedWhenUp(t, peerID, senderPubkey)
             }
             P2pControlMessage.Kind.CONNECTED -> {
                 // The peer already established the link (e.g. our inbound
@@ -400,6 +439,38 @@ object InternetP2pSignaling {
             )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send P2P signaling: ${e.message}")
+        }
+    }
+
+    /**
+     * Polls until the direct link to [peerID] is up (bounded window), then
+     * sends a CONNECTED announcement back to [senderPubkey] so the peer stops
+     * punching / re-establishing and simply reuses the link. Mirrors the
+     * importer-side announcement in [importLinkUri] for the generator side.
+     */
+    private fun announceConnectedWhenUp(
+        t: InternetMeshTransport,
+        peerID: String,
+        senderPubkey: String
+    ) {
+        scope.launch {
+            val deadline = System.currentTimeMillis() + P2pConfig.PUNCH_TOTAL_TIMEOUT_MS * 3
+            while (System.currentTimeMillis() < deadline) {
+                if (t.isPeerConnected(peerID)) {
+                    val local = t.gatherLocalCandidate()
+                    if (local != null) {
+                        val connected = P2pControlMessage.encode(
+                            P2pControlMessage.Kind.CONNECTED,
+                            local
+                        )
+                        if (sendControlDirect(senderPubkey, connected)) {
+                            P2pEventLog.log("✅ 已向对方宣告直连建立（${peerID.take(12)}…）")
+                        }
+                    }
+                    return@launch
+                }
+                delay(P2pConfig.PUNCH_PROBE_INTERVAL_MS)
+            }
         }
     }
 
