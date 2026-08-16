@@ -243,6 +243,13 @@ class MessageRouter private constructor(
             if (meshTarget != null && (isReady(mesh, meshTarget) || isInternetDirect(p2pKey))) {
                 mesh.sendPrivateMessage(entry.content, meshTarget, entry.nickname, entry.messageID)
                 iterator.remove()
+            } else if (isInternetDirect(p2pKey)) {
+                // P2P direct link is up but the peer is not a registered mesh
+                // peer yet (stranger): send through the INTERNET transport via
+                // its link key (mirrors sendPrivate's p2pKey fallback).
+                val p2pTarget = p2pKey ?: continue
+                mesh.sendPrivateMessage(entry.content, p2pTarget, entry.nickname, entry.messageID)
+                iterator.remove()
             } else if (canSendViaNostr(nostrTarget)) {
                 nostr.sendPrivateMessage(entry.content, nostrTarget, entry.nickname, entry.messageID)
                 iterator.remove()
@@ -341,6 +348,13 @@ class MessageRouter private constructor(
             val p2pKey = p2pKeyFor(resolution, conversationID)
 
             if (meshTarget != null && (isReady(mesh, meshTarget) || isInternetDirect(p2pKey))) {
+                flushOutboxFor(conversationID)
+                return@forEach
+            }
+            if (isInternetDirect(p2pKey)) {
+                // P2P direct link up even though the peer is not a registered
+                // mesh peer (stranger): flush so sendPrivate's p2pKey fallback
+                // can deliver over the INTERNET transport.
                 flushOutboxFor(conversationID)
                 return@forEach
             }
