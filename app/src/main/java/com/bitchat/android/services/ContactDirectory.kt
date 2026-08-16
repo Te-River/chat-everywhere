@@ -4,6 +4,7 @@ import android.content.Context
 import com.bitchat.android.favorites.FavoriteRelationship
 import com.bitchat.android.favorites.FavoritesPersistenceService
 import com.bitchat.android.identity.SecureIdentityStateManager
+import com.bitchat.android.internetp2p.PunchCandidate
 import com.bitchat.android.mesh.MeshService
 import com.bitchat.android.model.BitchatMessage
 import com.bitchat.android.nostr.GeohashAliasRegistry
@@ -225,4 +226,49 @@ object ContactDirectory {
         } catch (_: Exception) {
             false
         }
+
+    // ------------------------------------------------------------------
+    // Internet P2P candidate persistence
+    // ------------------------------------------------------------------
+
+    private const val P2P_CANDIDATE_PREFS = "p2p_candidates"
+
+    /**
+     * Persists the last known internet P2P candidate for [peerID] so a later
+     * session can attempt a direct link before (or without) a fresh Nostr
+     * OFFER round-trip.
+     */
+    fun cacheP2pCandidate(peerID: String, candidate: PunchCandidate) {
+        val context = appContext ?: return
+        try {
+            val json = PunchCandidate.toJson(candidate)
+            context.getSharedPreferences(P2P_CANDIDATE_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(peerID.lowercase(), json)
+                .apply()
+        } catch (_: Exception) { }
+    }
+
+    /** Returns the cached candidate for [peerID], or null. */
+    fun getCachedP2pCandidate(peerID: String): PunchCandidate? {
+        val context = appContext ?: return null
+        return try {
+            val json = context.getSharedPreferences(P2P_CANDIDATE_PREFS, Context.MODE_PRIVATE)
+                .getString(peerID.lowercase(), null) ?: return null
+            PunchCandidate.fromJson(json)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Clears all cached P2P candidates (used on panic/wipe). */
+    fun clearCachedP2pCandidates() {
+        val context = appContext ?: return
+        try {
+            context.getSharedPreferences(P2P_CANDIDATE_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .clear()
+                .apply()
+        } catch (_: Exception) { }
+    }
 }

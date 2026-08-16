@@ -1,11 +1,17 @@
 package com.bitchat.android.service
 
 import android.content.Context
+import com.bitchat.android.internetp2p.InternetMeshTransport
+import com.bitchat.android.internetp2p.InternetP2pSignaling
 import com.bitchat.android.mesh.BluetoothMeshService
 import com.bitchat.android.mesh.UnifiedMeshService
 import com.bitchat.android.model.RoutedPacket
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.sync.GossipSyncManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 /**
  * Process-wide holder to share a single BluetoothMeshService instance
@@ -76,6 +82,12 @@ object MeshServiceHolder {
     var unifiedMeshService: UnifiedMeshService? = null
         private set
 
+    @Volatile
+    var internetMeshTransport: InternetMeshTransport? = null
+        private set
+
+    private val internetScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     @Synchronized
     fun getOrCreate(context: Context): BluetoothMeshService {
         val existing = meshService
@@ -126,6 +138,42 @@ object MeshServiceHolder {
         return created
     }
 
+    /**
+     * Creates (or reuses) the internet P2P transport and registers it with
+     * the cross-transport bridge. Inbound packets from INTERNET links are
+     * injected into the Bluetooth mesh processing pipeline, so they are
+     * validated, decrypted, routed and bridged exactly like radio packets.
+     */
+    @Synchronized
+    fun getInternetTransportOrCreate(context: Context): InternetMeshTransport {
+        val existing = internetMeshTransport
+        if (existing != null) return existing
+        val created = InternetMeshTransport(
+            scope = internetScope,
+            onInboundPacket = { packet, peerID, relayAddress, ingressLinkID ->
+                meshService?.processInboundFromInternet(
+                    packet = packet,
+                    peerID = peerID,
+                    relayAddress = relayAddress,
+                    ingressLinkID = ingressLinkID
+                )
+            }
+        )
+        internetMeshTransport = created
+        try {
+            TransportBridgeService.register("INTERNET", created)
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Failed to register INTERNET transport: ${e.message}")
+        }
+        try {
+            InternetP2pSignaling.attach(created, context)
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Failed to attach P2P signaling: ${e.message}")
+        }
+        android.util.Log.i(TAG, "Created new InternetMeshTransport")
+        return created
+    }
+
     @Synchronized
     fun attach(service: BluetoothMeshService) {
         android.util.Log.d(TAG, "Attaching BluetoothMeshService to holder")
@@ -142,5 +190,10 @@ object MeshServiceHolder {
         activeGossipOwners.clear()
         meshService = null
         unifiedMeshService = null
+        try { internetMeshTransport?.closeAll() } catch (_: Exception) { }
+        try { TransportBridgeService.unregister("INTERNET") } catch (_: Exception) { }
+        try { InternetP2pSignaling.detach() } catch (_: Exception) { }
+        internetMeshTransport = null
+        internetScope.cancel()
     }
 }

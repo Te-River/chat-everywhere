@@ -1616,6 +1616,33 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
     // MARK: - Panic Mode Support
     
     /**
+     * Injects an inbound packet received from the internet P2P transport into
+     * the shared mesh processing pipeline. This mirrors the BLE inbound path
+     * (see BluetoothConnectionManagerDelegate.onPacketReceived) so packets
+     * arriving over INTERNET links are validated, decrypted, routed and
+     * bridged exactly like radio packets.
+     *
+     * @param peerID The originating peer (mesh peer ID, from packet.senderID).
+     * @param relayAddress The INTERNET link identifier of the sender.
+     * @param ingressLinkID Process-local ingress identity for exact-link ops.
+     */
+    fun processInboundFromInternet(
+        packet: BitchatPacket,
+        peerID: String?,
+        relayAddress: String?,
+        ingressLinkID: String?
+    ) {
+        if (terminated || !serviceScope.isActive) return
+        try {
+            packetProcessor.processPacket(
+                RoutedPacket(packet, peerID, relayAddress, ingressLinkID = ingressLinkID)
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing inbound INTERNET packet: ${e.message}")
+        }
+    }
+    
+    /**
      * Clear all internal mesh service data (for panic mode)
      */
     fun clearAllInternalData() {

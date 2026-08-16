@@ -512,6 +512,24 @@ fun AboutSheet(
                         var liveVoiceEnabled by remember {
                             mutableStateOf(com.bitchat.android.features.voice.LiveVoicePreferences.isEnabled(context))
                         }
+                        LaunchedEffect(Unit) { com.bitchat.android.internetp2p.P2pPreferenceManager.init(context) }
+                        var p2pEnabled by remember {
+                            mutableStateOf(com.bitchat.android.internetp2p.P2pPreferenceManager.isEnabled())
+                        }
+                        var p2pLinkCount by remember { mutableStateOf(0) }
+                        var showStunDialog by remember { mutableStateOf(false) }
+                        var stunInput by remember {
+                            mutableStateOf(com.bitchat.android.internetp2p.P2pPreferenceManager.getStunServers().joinToString(","))
+                        }
+                        LaunchedEffect(p2pEnabled) {
+                            while (p2pEnabled) {
+                                p2pLinkCount = try {
+                                    com.bitchat.android.service.MeshServiceHolder
+                                        .internetMeshTransport?.connectedPeerIDs()?.size ?: 0
+                                } catch (_: Exception) { 0 }
+                                kotlinx.coroutines.delay(5_000)
+                            }
+                        }
                         val torMode = remember { mutableStateOf(TorPreferenceManager.get(context)) }
                         val torProvider = remember { ArtiTorManager.getInstance() }
                         val torStatus by torProvider.statusFlow.collectAsState()
@@ -610,6 +628,89 @@ fun AboutSheet(
                                             }
                                         } else null
                                     )
+
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(start = 56.dp),
+                                        color = colorScheme.outline.copy(alpha = 0.12f)
+                                    )
+
+                                    // Internet P2P Toggle (direct device-to-device links;
+                                    // Nostr relays remain the fallback when punching fails).
+                                    SettingsToggleRow(
+                                        icon = Icons.Filled.Public,
+                                        title = "Internet P2P direct",
+                                        subtitle = "Connect directly over the internet when NAT allows; falls back to Nostr relays otherwise",
+                                        checked = p2pEnabled,
+                                        onCheckedChange = { enabled ->
+                                            p2pEnabled = enabled
+                                            com.bitchat.android.internetp2p.P2pPreferenceManager.setEnabled(enabled)
+                                            if (enabled) {
+                                                try {
+                                                    com.bitchat.android.service.MeshServiceHolder
+                                                        .getInternetTransportOrCreate(context).start()
+                                                } catch (_: Exception) { }
+                                            } else {
+                                                try {
+                                                    com.bitchat.android.service.MeshServiceHolder
+                                                        .internetMeshTransport?.closeAll()
+                                                } catch (_: Exception) { }
+                                            }
+                                        },
+                                        statusIndicator = if (p2pEnabled && p2pLinkCount > 0) {
+                                            {
+                                                val statusColor = colorScheme.primary
+                                                Surface(
+                                                    color = statusColor,
+                                                    shape = CircleShape,
+                                                    modifier = Modifier.size(8.dp)
+                                                ) {}
+                                            }
+                                        } else null
+                                    )
+
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(start = 56.dp),
+                                        color = colorScheme.outline.copy(alpha = 0.12f)
+                                    )
+
+                                    // STUN server configuration for the internet P2P channel.
+                                    SettingsToggleRow(
+                                        icon = Icons.Filled.Public,
+                                        title = "STUN servers",
+                                        subtitle = "Reflectors for NAT discovery; comma-separated host:port list. Falling back to Nostr relays never requires them.",
+                                        checked = false,
+                                        onCheckedChange = { showStunDialog = true }
+                                    )
+
+                                    if (showStunDialog) {
+                                        AlertDialog(
+                                            onDismissRequest = { showStunDialog = false },
+                                            title = { Text("STUN servers", style = MaterialTheme.typography.titleMedium) },
+                                            text = {
+                                                OutlinedTextField(
+                                                    value = stunInput,
+                                                    onValueChange = { stunInput = it },
+                                                    label = { Text("host:port, host:port, …") },
+                                                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                                        fontFamily = BitchatFontFamily
+                                                    ),
+                                                    colors = OutlinedTextFieldDefaults.colors(
+                                                        focusedBorderColor = colorScheme.primary,
+                                                        unfocusedBorderColor = colorScheme.outline
+                                                    )
+                                                )
+                                            },
+                                            confirmButton = {
+                                                TextButton(onClick = {
+                                                    com.bitchat.android.internetp2p.P2pPreferenceManager.setStunServers(stunInput)
+                                                    showStunDialog = false
+                                                }) { Text("Save") }
+                                            },
+                                            dismissButton = {
+                                                TextButton(onClick = { showStunDialog = false }) { Text("Cancel") }
+                                            }
+                                        )
+                                    }
 
                                     HorizontalDivider(
                                         modifier = Modifier.padding(start = 56.dp),

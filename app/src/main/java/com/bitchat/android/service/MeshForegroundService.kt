@@ -231,6 +231,20 @@ class MeshForegroundService : Service() {
         } catch (e: Exception) {
             android.util.Log.e("MeshForegroundService", "Failed to start mesh service: ${e.message}")
         }
+
+        // Bring up the internet P2P transport (registered as "INTERNET" in the
+        // cross-transport bridge). It only creates links on demand via Nostr
+        // signaling; no server connection is made here. Defaults to enabled;
+        // the user can disable it from the settings sheet.
+        try {
+            com.bitchat.android.internetp2p.P2pPreferenceManager.init(applicationContext)
+            if (com.bitchat.android.internetp2p.P2pPreferenceManager.isEnabled()) {
+                val internet = MeshServiceHolder.getInternetTransportOrCreate(applicationContext)
+                internet.start()
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MeshForegroundService", "Failed to start internet P2P transport: ${e.message}")
+        }
     }
 
     private fun updateNotification(force: Boolean) {

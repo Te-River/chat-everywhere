@@ -148,6 +148,16 @@ class NostrDirectMessageHandler(
                     return
                 }
 
+                // Internet P2P channel signaling (OFFER/ANSWER/CANDIDATE) rides
+                // the same encrypted DM stream; intercept it before it becomes
+                // a chat message.
+                val p2pControl = com.bitchat.android.internetp2p.P2pControlMessage.parse(pm.content)
+                if (p2pControl != null) {
+                    com.bitchat.android.internetp2p.InternetP2pSignaling
+                        .handleIncoming(senderPubkey, pm.content)
+                    return
+                }
+
                 val message = BitchatMessage(
                     id = pm.messageID,
                     sender = senderNickname,

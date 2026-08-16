@@ -74,3 +74,6 @@ tools/arti-build/target/
 
 # JVM heap dumps (a Gradle daemon OOM drops these in the repo root)
 *.hprof
+
+# Local build output (never commit)
+/Release/
