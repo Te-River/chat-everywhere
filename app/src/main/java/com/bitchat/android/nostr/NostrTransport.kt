@@ -427,6 +427,53 @@ class NostrTransport(
     // MARK: - Helper Methods
     
     /**
+     * Sends an encrypted private message directly to a Nostr pubkey (hex),
+     * bypassing the favorites-based recipient resolution. Used by the P2P
+     * signaling flow to exchange candidates between strangers (QR / share
+     * link), where no favorite relationship exists yet.
+     */
+    fun sendPrivateMessageToPubkeyHex(
+        content: String,
+        recipientHex: String,
+        messageID: String
+    ) {
+        transportScope.launch {
+            try {
+                if (recipientHex.isEmpty()) return@launch
+
+                val senderIdentity = NostrIdentityBridge.getCurrentNostrIdentity(context)
+                    ?: run {
+                        Log.e(TAG, "No Nostr identity available for direct PM")
+                        return@launch
+                    }
+
+                // No recipient peer ID to embed (stranger), same as geohash DMs.
+                val embedded = NostrEmbeddedBitChat.encodePMForNostrNoRecipient(
+                    content = content,
+                    messageID = messageID,
+                    senderPeerID = senderPeerID
+                ) ?: run {
+                    Log.e(TAG, "NostrTransport: failed to embed direct PM packet")
+                    return@launch
+                }
+
+                val giftWraps = NostrProtocol.createPrivateMessage(
+                    content = embedded,
+                    recipientPubkey = recipientHex,
+                    senderIdentity = senderIdentity
+                )
+
+                giftWraps.forEach { event ->
+                    NostrRelayManager.registerPendingGiftWrap(event.id)
+                    NostrRelayManager.getInstance(context).sendEvent(event)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send direct private message: ${e.message}")
+            }
+        }
+    }
+
+    /**
      * Resolve Nostr public key for a peer ID
      */
     private fun resolveNostrPublicKey(peerID: String): String? {

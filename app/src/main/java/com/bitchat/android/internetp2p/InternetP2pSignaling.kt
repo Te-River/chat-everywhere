@@ -78,6 +78,11 @@ object InternetP2pSignaling {
                     } else null
                     if (sourceGeohash != null) {
                         sendControlGeohash(senderPubkey, answer, sourceGeohash)
+                    } else if (peerID.startsWith("nostr_")) {
+                        // Stranger without a geohash context (QR / share-link
+                        // flow): the sender pubkey hex is enough to reply over
+                        // the encrypted Nostr DM channel directly.
+                        sendControlDirect(senderPubkey, answer)
                     } else {
                         sendControl(senderPubkey, answer)
                     }
@@ -186,6 +191,28 @@ object InternetP2pSignaling {
         }
         t.connectToPeer(peerID, payload.candidate)
         Log.i(TAG, "Imported peer link, connecting to ${peerID.take(12)}…")
+
+        // The QR/link flow is asymmetric: the generator (A) listens inbound but
+        // never learns our candidate. If A sits behind a restrictive NAT, its
+        // first inbound packet from us will be dropped, so hole punching needs
+        // BOTH sides to send. Send our candidate back to A over the encrypted
+        // Nostr DM channel so A can answer and both sides punch symmetrically.
+        val recipientHex = try {
+            ContactIdentityResolver.nostrPubkeyHex(payload.npub)
+        } catch (e: Exception) {
+            null
+        }
+        if (recipientHex != null) {
+            scope.launch {
+                val local = t.gatherLocalCandidate()
+                if (local != null) {
+                    val offer = P2pControlMessage.encode(P2pControlMessage.Kind.OFFER, local)
+                    if (sendControlDirect(recipientHex, offer)) {
+                        Log.i(TAG, "Sent OFFER back to link generator ${recipientHex.take(12)}…")
+                    }
+                }
+            }
+        }
         return peerID
     }
 
@@ -300,6 +327,30 @@ object InternetP2pSignaling {
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send geohash P2P signaling: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Sends P2P signaling directly to a stranger's Nostr pubkey (hex) over
+     * the encrypted DM channel, without requiring a favorite relationship.
+     * Used by the QR / share-link flow where the recipient is only known by
+     * pubkey and there is no geohash context.
+     *
+     * @return True when the send was dispatched to the Nostr transport.
+     */
+    private fun sendControlDirect(recipientHex: String, content: String): Boolean {
+        val context = appContext ?: return false
+        return try {
+            val nostr = NostrTransport.getInstance(context)
+            nostr.sendPrivateMessageToPubkeyHex(
+                content = content,
+                recipientHex = recipientHex,
+                messageID = UUID.randomUUID().toString()
+            )
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send direct P2P signaling: ${e.message}")
             false
         }
     }
