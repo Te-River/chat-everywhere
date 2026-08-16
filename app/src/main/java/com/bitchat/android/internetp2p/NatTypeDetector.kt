@@ -96,7 +96,11 @@ class NatTypeDetector(
     /**
      * Runs the RFC 5780 test sequence:
      *
-     * Test I:  plain binding to the primary server. No response => UDP blocked.
+     * Test I:  plain binding request. Each configured server is tried in order
+     *          and the FIRST one that answers becomes the primary - a single
+     *          unreachable server must not mask the others (e.g. one relay is
+     *          down but a second answers fine). No server responding => UDP
+     *          blocked.
      * Test II: binding that must come back from a *different* address (a
      *          second configured server, or CHANGE-REQUEST when the primary
      *          supports it). Response received => endpoint-independent
@@ -107,35 +111,46 @@ class NatTypeDetector(
      *          restricted cone from port-restricted cone.
      */
     suspend fun detect(): ProbeResult {
-        val primary = servers.firstOrNull() ?: return ProbeResult(
-            NatType.UDP_BLOCKED, null, localAddress, servers
-        )
-
-        // Test I
-        val testI = probe(primary, null)
-        val mappedI = testI.reflectedAddress
-        if (mappedI == null) {
-            // No response, or response without a mapped address.
+        if (servers.isEmpty()) {
             return ProbeResult(NatType.UDP_BLOCKED, null, localAddress, servers)
         }
+
+        // Test I: try every configured server in order; the first responder
+        // becomes the primary used for the remaining tests.
+        var primary: InetSocketAddress? = null
+        var mappedI: InetSocketAddress? = null
+        for (server in servers) {
+            val response = probe(server, null)
+            val mapped = response.reflectedAddress
+            if (mapped != null) {
+                primary = server
+                mappedI = mapped
+                break
+            }
+        }
+        if (mappedI == null) {
+            // No server answered at all.
+            return ProbeResult(NatType.UDP_BLOCKED, null, localAddress, servers)
+        }
+        val primaryServer = requireNotNull(primary)
 
         if (isSameEndpoint(mappedI, localAddress)) {
             return ProbeResult(NatType.OPEN_INTERNET, mappedI, localAddress, servers)
         }
 
         // Test II: different-address reflection.
-        val secondServer = servers.getOrNull(1)
+        val secondServer = servers.firstOrNull { it != primaryServer }
         val testII = if (secondServer != null) {
             probe(secondServer, null)
         } else {
             // Fall back to CHANGE-REQUEST on the primary; only honored by
             // servers that expose a second address.
-            probe(primary, StunMessage.CHANGE_REQUEST_IP or StunMessage.CHANGE_REQUEST_PORT)
+            probe(primaryServer, StunMessage.CHANGE_REQUEST_IP or StunMessage.CHANGE_REQUEST_PORT)
         }
         val mappedII = testII.reflectedAddress
 
         // Test III: same-address, different-port reflection.
-        val testIII = probe(primary, StunMessage.CHANGE_REQUEST_PORT)
+        val testIII = probe(primaryServer, StunMessage.CHANGE_REQUEST_PORT)
         val receivedIII = testIII.message != null
 
         return classify(mappedI, mappedII, receivedIII)

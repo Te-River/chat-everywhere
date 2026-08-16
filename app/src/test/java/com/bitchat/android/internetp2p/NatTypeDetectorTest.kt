@@ -75,6 +75,39 @@ class NatTypeDetectorTest {
         assertFalse(result.directConnectViable)
     }
 
+    /**
+     * Multi-server fallback: when the FIRST configured server is unreachable
+     * but a later one answers, the probe must succeed instead of reporting
+     * UDP_BLOCKED (a single dead relay must not mask the others).
+     */
+    @Test
+    fun `first server silent but second answers still classifies nat`() {
+        val result = kotlinx.coroutines.runBlocking {
+            NatTypeDetector(
+                probe = { server, changeRequest ->
+                    when {
+                        server == serverA && changeRequest == null ->
+                            // Primary silent (dead relay / blocked).
+                            StunClient.ProbeResult(null, server)
+                        // The surviving server answers Test I and the
+                        // port-only CHANGE-REQUEST (Test III), so the NAT is
+                        // classified as restricted cone instead of blocked.
+                        server == serverB &&
+                            (changeRequest == null ||
+                                changeRequest == StunMessage.CHANGE_REQUEST_PORT) ->
+                            response(mapped("203.0.113.10", 5000))
+                        else -> StunClient.ProbeResult(null, server)
+                    }
+                },
+                localAddress = local,
+                servers = listOf(serverA, serverB)
+            ).detect()
+        }
+        assertEquals(NatTypeDetector.NatType.RESTRICTED_CONE, result.natType)
+        assertNotNull(result.mappedAddress)
+        assertTrue(result.udpPunchViable)
+    }
+
     @Test
     fun `reflected equals local means open internet`() {
         val result = kotlinx.coroutines.runBlocking { detector(testI = response(local)).detect() }

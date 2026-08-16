@@ -78,7 +78,9 @@ class StunClient(
                 if (!decoded.transactionId.contentEquals(transactionId)) {
                     Log.w(TAG, "STUN transaction id mismatch from $server; ignoring")
                     // Another peer's traffic can land on a shared socket; ignore
-                    // and keep waiting for our own response (same attempt budget).
+                    // and keep waiting for our own response. Consume the attempt
+                    // budget so a flood of foreign datagrams cannot loop forever.
+                    attempt++
                     continue
                 }
                 return@withContext ProbeResult(decoded, server)
