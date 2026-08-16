@@ -118,6 +118,7 @@ class InternetMeshTransport(
                     ingressIds[inbound.link] = "internet:$key"
                     inboundLinkDescription = inbound.link.endpointDescription
                     Log.i(TAG, "Inbound link registered as $key via ${inbound.link.endpointDescription}")
+                    P2pEventLog.log("✅ 入站直连建立 via ${inbound.link.endpointDescription}")
                 } catch (e: Exception) {
                     Log.w(TAG, "Inbound listen failed: ${e.message}")
                 }
@@ -147,11 +148,14 @@ class InternetMeshTransport(
                     linkToPeer[link] = peerID
                     ingressIds[link] = "internet:$peerID"
                     Log.i(TAG, "Link established with ${peerID.take(12)}… via ${link.endpointDescription}")
+                    P2pEventLog.log("✅ 直连建立：${peerID.take(12)}… via ${link.endpointDescription}")
                 } else {
                     Log.w(TAG, "No direct link possible for ${peerID.take(12)}…; falling back to Nostr")
+                    P2pEventLog.log("❌ 直连失败：${peerID.take(12)}… 打洞未成功，将走 Nostr")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "connectToPeer(${peerID.take(12)}…) failed: ${e.message}")
+                P2pEventLog.log("❌ 连接异常：${e.message}")
             } finally {
                 pending.remove(peerID)
             }

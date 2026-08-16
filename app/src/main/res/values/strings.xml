@@ -94,6 +94,8 @@
   <string name="p2p_link_tab_mine">My link</string>
   <string name="p2p_link_tab_scan">Scan</string>
   <string name="p2p_link_tab_import">Import</string>
+  <string name="p2p_link_tab_log">Log</string>
+  <string name="p2p_link_log_empty">No P2P activity yet</string>
   <string name="p2p_link_building">Building your link…</string>
   <string name="p2p_link_share">Share</string>
   <string name="p2p_link_copy">Copy</string>

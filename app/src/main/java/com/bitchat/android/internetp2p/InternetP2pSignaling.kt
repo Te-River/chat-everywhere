@@ -39,6 +39,7 @@ object InternetP2pSignaling {
         transport?.let { return it }
         val context = appContext ?: run {
             Log.w(TAG, "P2P transport not attached and no app context to create it")
+            P2pEventLog.log("P2P 传输不可用：无应用上下文，无法创建")
             return null
         }
         return try {
@@ -46,9 +47,11 @@ object InternetP2pSignaling {
                 .getInternetTransportOrCreate(context)
             created.start()
             transport = created
+            P2pEventLog.log("P2P 传输已就绪")
             created
         } catch (e: Exception) {
             Log.e(TAG, "Failed to lazily create P2P transport: ${e.message}")
+            P2pEventLog.log("P2P 传输创建失败：${e.message}")
             null
         }
     }
@@ -208,19 +211,24 @@ object InternetP2pSignaling {
      */
     fun importLinkUri(uri: String): String? {
         Log.i(TAG, "importLinkUri called: ${uri.take(48)}… len=${uri.length}")
+        P2pEventLog.log("收到链接（${uri.take(24)}…，长度 ${uri.length}）")
         val t = ensureTransport() ?: run {
             Log.w(TAG, "Cannot import link: P2P transport unavailable")
+            P2pEventLog.log("导入失败：P2P 传输不可用")
             return null
         }
         val payload = P2pUriCodec.decode(uri) ?: run {
             Log.w(TAG, "Ignoring unrecognized peer link")
+            P2pEventLog.log("导入失败：无法解析链接（格式错误）")
             return null
         }
         val peerID = resolvePeerID(payload.npub) ?: run {
             Log.w(TAG, "Cannot derive identity for link sender; ignoring")
+            P2pEventLog.log("导入失败：无法识别对方身份")
             return null
         }
         t.connectToPeer(peerID, payload.candidate)
+        P2pEventLog.log("已解析链接，开始连接对方…")
         Log.i(TAG, "Imported peer link, connecting to ${peerID.take(12)}…")
 
         // The QR/link flow is asymmetric: the generator (A) listens inbound but

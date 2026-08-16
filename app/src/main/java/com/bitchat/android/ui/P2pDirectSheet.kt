@@ -164,6 +164,9 @@ fun P2pDirectSheet(
                 Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }) {
                     Text(stringResource(R.string.p2p_link_tab_import), fontFamily = BitchatFontFamily, fontSize = 14.sp)
                 }
+                Tab(selected = selectedTab == 3, onClick = { selectedTab = 3 }) {
+                    Text(stringResource(R.string.p2p_link_tab_log), fontFamily = BitchatFontFamily, fontSize = 14.sp)
+                }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -264,6 +267,41 @@ fun P2pDirectSheet(
                             ).show()
                         }
                     }
+                )
+                3 -> LogTab()
+            }
+        }
+    }
+}
+
+/**
+ * In-app P2P event log: shows exactly what the P2P channel did (transport
+ * bring-up, link import, punch results, link established/failed) WITHOUT
+ * requiring adb/logcat - the user can read it straight from the sheet.
+ */
+@Composable
+private fun LogTab() {
+    val events by com.bitchat.android.internetp2p.P2pEventLog.events.collectAsState()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        if (events.isEmpty()) {
+            Text(
+                text = stringResource(R.string.p2p_link_log_empty),
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = BitchatFontFamily,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            events.forEach { line ->
+                Text(
+                    text = line,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = BitchatFontFamily,
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             }
         }

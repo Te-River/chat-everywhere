@@ -132,6 +132,8 @@
   <string name="p2p_link_tab_mine">我的链接</string>
   <string name="p2p_link_tab_scan">扫码</string>
   <string name="p2p_link_tab_import">导入</string>
+  <string name="p2p_link_tab_log">日志</string>
+  <string name="p2p_link_log_empty">暂无 P2P 活动日志</string>
   <string name="p2p_link_building">正在生成链接…</string>
   <string name="p2p_link_share">分享</string>
   <string name="p2p_link_copy">复制</string>
