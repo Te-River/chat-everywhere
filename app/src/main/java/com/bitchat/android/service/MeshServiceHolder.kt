@@ -164,6 +164,22 @@ object MeshServiceHolder {
                     relayAddress = relayAddress,
                     ingressLinkID = ingressLinkID
                 )
+            },
+            // A fresh direct link is invisible to the mesh layer until the peer
+            // is registered (ANNOUNCE) and a Noise session exists; without this
+            // the router queues messages forever (meshTarget == null). Kick the
+            // registration as soon as the link comes up.
+            onLinkEstablished = { peerID ->
+                try {
+                    meshService?.sendAnnouncementToPeer(peerID)
+                } catch (e: Exception) {
+                    android.util.Log.w(TAG, "Announce after link up failed: ${e.message}")
+                }
+                try {
+                    meshService?.initiateNoiseHandshake(peerID)
+                } catch (e: Exception) {
+                    android.util.Log.w(TAG, "Noise handshake after link up failed: ${e.message}")
+                }
             }
         )
         internetMeshTransport = created

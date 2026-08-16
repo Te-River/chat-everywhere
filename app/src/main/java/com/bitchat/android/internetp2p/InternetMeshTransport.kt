@@ -36,7 +36,14 @@ class InternetMeshTransport(
         peerID: String?,
         relayAddress: String?,
         ingressLinkID: String?
-    ) -> Unit
+    ) -> Unit,
+    /**
+     * Invoked when a direct link is established (either by punching out or by
+     * accepting an inbound connection). Lets the mesh layer register the peer
+     * (ANNOUNCE + Noise handshake) so messages route over the link instead of
+     * queueing forever behind a null meshTarget.
+     */
+    private val onLinkEstablished: ((peerID: String) -> Unit)? = null
 ) : MeshTransport, TransportBridgeService.TransportLayer {
 
     companion object {
@@ -119,6 +126,7 @@ class InternetMeshTransport(
                     inboundLinkDescription = inbound.link.endpointDescription
                     Log.i(TAG, "Inbound link registered as $key via ${inbound.link.endpointDescription}")
                     P2pEventLog.log("✅ 入站直连建立 via ${inbound.link.endpointDescription}")
+                    onLinkEstablished?.invoke(key)
                 } catch (e: Exception) {
                     Log.w(TAG, "Inbound listen failed: ${e.message}")
                 }
@@ -151,6 +159,7 @@ class InternetMeshTransport(
                     ingressIds[link] = "internet:$peerID"
                     Log.i(TAG, "Link established with ${peerID.take(12)}… via ${link.endpointDescription}")
                     P2pEventLog.log("✅ 直连建立：${peerID.take(12)}… via ${link.endpointDescription}")
+                    onLinkEstablished?.invoke(peerID)
                 } else {
                     // The generator side may already hold an inbound link from
                     // this peer (listenForInboundLinks). Its key is
