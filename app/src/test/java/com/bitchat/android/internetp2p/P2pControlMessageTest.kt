@@ -64,5 +64,33 @@ class P2pControlMessageTest {
         assertEquals("203.0.113.10", back!!.mappedHost)
         assertEquals(5000, back.mappedPort)
         assertEquals("2001:db8::1", back.ipv6Host)
+        assertEquals("192.168.1.50", back.lanHost)
+    }
+
+    /**
+     * Regression: lanHost must survive the FULL URI chain (P2pUriCodec encode
+     * -> decode), since a LAN-tier connection depends on it. A dropped lanHost
+     * made the receiving peer report "对方无局域网地址" and skip Tier 0.
+     */
+    @Test
+    fun `lanHost survives uri codec round trip`() {
+        val uri = P2pUriCodec.encode("npub1test", candidate)
+        val decoded = P2pUriCodec.decode(uri)
+        assertNotNull(decoded)
+        assertEquals("192.168.1.50", decoded!!.candidate.lanHost)
+        assertEquals(candidate.natType, decoded.candidate.natType)
+    }
+
+    /**
+     * Regression: the OFFER/ANSWER control-message chain (the way the QR
+     * importer sends its own candidate back to the generator) must preserve
+     * lanHost too.
+     */
+    @Test
+    fun `lanHost survives control message chain`() {
+        val encoded = P2pControlMessage.encode(P2pControlMessage.Kind.OFFER, candidate)
+        val parsed = P2pControlMessage.parse(encoded)
+        assertNotNull(parsed)
+        assertEquals("192.168.1.50", parsed!!.candidate.lanHost)
     }
 }

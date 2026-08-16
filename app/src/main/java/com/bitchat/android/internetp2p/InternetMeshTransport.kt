@@ -136,7 +136,9 @@ class InternetMeshTransport(
      * [peerID] is the stable noiseKeyHex identity key.
      */
     fun connectToPeer(peerID: String, candidate: PunchCandidate) {
-        if (links.containsKey(peerID) || pending.contains(peerID)) return
+        // Already have a link for this peer (direct or via an inbound alias)?
+        // Do not re-establish - treat it as connected.
+        if (resolveLinkKey(peerID) != null || pending.contains(peerID)) return
         pending.add(peerID)
         scope.launch(Dispatchers.IO) {
             try {
@@ -150,8 +152,21 @@ class InternetMeshTransport(
                     Log.i(TAG, "Link established with ${peerID.take(12)}… via ${link.endpointDescription}")
                     P2pEventLog.log("✅ 直连建立：${peerID.take(12)}… via ${link.endpointDescription}")
                 } else {
-                    Log.w(TAG, "No direct link possible for ${peerID.take(12)}…; falling back to Nostr")
-                    P2pEventLog.log("❌ 直连失败：${peerID.take(12)}… 打洞未成功，将走 Nostr")
+                    // The generator side may already hold an inbound link from
+                    // this peer (listenForInboundLinks). Its key is
+                    // "inbound:<peer nonce>", which differs from peerID; alias
+                    // it so the bridge can route and we do not report failure
+                    // while a working link exists.
+                    val inboundKey = "inbound:${candidate.nonce}"
+                    val inbound = links[inboundKey]
+                    if (inbound != null && !inbound.isClosed) {
+                        peerAliases[peerID] = inboundKey
+                        Log.i(TAG, "Reused inbound link $inboundKey for ${peerID.take(12)}…")
+                        P2pEventLog.log("✅ 复用入站直连：${peerID.take(12)}… via ${inbound.endpointDescription}")
+                    } else {
+                        Log.w(TAG, "No direct link possible for ${peerID.take(12)}…; falling back to Nostr")
+                        P2pEventLog.log("❌ 直连失败：${peerID.take(12)}… 打洞未成功，将走 Nostr")
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "connectToPeer(${peerID.take(12)}…) failed: ${e.message}")

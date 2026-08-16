@@ -245,6 +245,10 @@ object InternetP2pSignaling {
             scope.launch {
                 val local = t.gatherLocalCandidate()
                 if (local != null) {
+                    P2pEventLog.log(
+                        "回传候选：局域网=${local.lanHost ?: "无"} IPv6=${local.ipv6Host ?: "无"} " +
+                            "公网=${local.mappedHost ?: "无"} 端口=${local.tcpPort}"
+                    )
                     val offer = P2pControlMessage.encode(P2pControlMessage.Kind.OFFER, local)
                     if (sendControlDirect(recipientHex, offer)) {
                         Log.i(TAG, "Sent OFFER back to link generator ${recipientHex.take(12)}…")
