@@ -102,6 +102,13 @@ fun P2pDirectSheet(
     var importText by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
+        // The sheet is a user-facing entry point: ensure the internet P2P
+        // transport exists and signaling is attached even when the foreground
+        // service never started (otherwise export/import would silently no-op).
+        try {
+            com.bitchat.android.service.MeshServiceHolder
+                .getInternetTransportOrCreate(context)
+        } catch (_: Exception) { }
         myLink = InternetP2pSignaling.exportLinkUri()
     }
 

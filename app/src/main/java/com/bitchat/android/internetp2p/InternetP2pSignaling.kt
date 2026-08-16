@@ -29,6 +29,30 @@ object InternetP2pSignaling {
     @Volatile private var appContext: Context? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    /**
+     * Lazily ensures the transport exists: if the mesh service has not wired
+     * it up yet (e.g. the foreground service did not start), create it via the
+     * holder, which also attaches this signaling object. Safe to call from the
+     * UI entry points; no-op when already attached.
+     */
+    private fun ensureTransport(): InternetMeshTransport? {
+        transport?.let { return it }
+        val context = appContext ?: run {
+            Log.w(TAG, "P2P transport not attached and no app context to create it")
+            return null
+        }
+        return try {
+            val created = com.bitchat.android.service.MeshServiceHolder
+                .getInternetTransportOrCreate(context)
+            created.start()
+            transport = created
+            created
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to lazily create P2P transport: ${e.message}")
+            null
+        }
+    }
+
     /** Attaches the transport instance (and app context for Nostr replies). */
     fun attach(t: InternetMeshTransport, context: Context) {
         transport = t
@@ -154,7 +178,10 @@ object InternetP2pSignaling {
      *   no Nostr identity exists.
      */
     suspend fun exportLinkUri(): String? {
-        val t = transport ?: return null
+        val t = ensureTransport() ?: run {
+            Log.w(TAG, "Cannot export link: P2P transport unavailable")
+            return null
+        }
         val context = appContext ?: return null
         val npub = try {
             NostrIdentityBridge.getCurrentNostrIdentity(context)?.npub
@@ -180,7 +207,10 @@ object InternetP2pSignaling {
      *   connection attempt started, or null when it could not be imported.
      */
     fun importLinkUri(uri: String): String? {
-        val t = transport ?: return null
+        val t = ensureTransport() ?: run {
+            Log.w(TAG, "Cannot import link: P2P transport unavailable")
+            return null
+        }
         val payload = P2pUriCodec.decode(uri) ?: run {
             Log.w(TAG, "Ignoring unrecognized peer link")
             return null
