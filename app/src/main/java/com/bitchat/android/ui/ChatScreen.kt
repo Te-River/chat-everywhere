@@ -100,6 +100,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
     var initialViewerIndex by remember { mutableStateOf(0) }
     var forceScrollToBottom by remember { mutableStateOf(false) }
     var isScrolledUp by remember { mutableStateOf(false) }
+    // P2P direct link sheet visibility (QR / scan / share / channel-probe).
+    var showP2pDirectSheet by remember { mutableStateOf(false) }
 
     LaunchedEffect(selectedPrivatePeer) {
         messageText = TextFieldValue(
@@ -464,8 +466,19 @@ fun ChatScreen(viewModel: ChatViewModel) {
             onLocationNotesClick = {
                 nearbyNotesController.reveal()
                 showLocationNotesSheet = true
-            }
+            },
+            // P2P direct link sheet: QR / scan / share / channel-probe entry
+            // (connects without a favorite relationship).
+            onP2pDirectClick = { showP2pDirectSheet = true }
         )
+
+        if (showP2pDirectSheet) {
+            P2pDirectSheet(
+                isPresented = showP2pDirectSheet,
+                onDismiss = { showP2pDirectSheet = false },
+                viewModel = viewModel
+            )
+        }
 
         // Scroll-to-bottom floating button
         AnimatedVisibility(
@@ -763,7 +776,8 @@ private fun ChatFloatingHeader(
     onShowAppInfo: () -> Unit,
     onPanicClear: () -> Unit,
     onLocationChannelsClick: () -> Unit,
-    onLocationNotesClick: () -> Unit
+    onLocationNotesClick: () -> Unit,
+    onP2pDirectClick: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val locationManager = remember { com.bitchat.android.geohash.LocationChannelManager.getInstance(context) }
@@ -844,6 +858,7 @@ private fun ChatFloatingHeader(
                     ).show()
                 }
             },
+            onP2pDirectClick = onP2pDirectClick,
             isSearching = isSearching
         )
     }

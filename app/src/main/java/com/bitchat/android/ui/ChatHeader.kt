@@ -654,6 +654,7 @@ fun ChatHeaderContent(
     onLocationChannelsClick: () -> Unit,
     onLocationNotesClick: () -> Unit,
     onSearchClick: () -> Unit,
+    onP2pDirectClick: () -> Unit,
     isSearching: Boolean = false
 ) {
     val colorScheme = MaterialTheme.colorScheme
@@ -679,6 +680,7 @@ fun ChatHeaderContent(
                 onLocationChannelsClick = onLocationChannelsClick,
                 onLocationNotesClick = onLocationNotesClick,
                 onSearchClick = onSearchClick,
+                onP2pDirectClick = onP2pDirectClick,
                 isSearching = isSearching,
                 viewModel = viewModel
             )
@@ -721,6 +723,7 @@ private fun MainHeader(
     onLocationChannelsClick: () -> Unit,
     onLocationNotesClick: () -> Unit,
     onSearchClick: () -> Unit,
+    onP2pDirectClick: () -> Unit,
     isSearching: Boolean,
     viewModel: ChatViewModel
 ) {
@@ -804,6 +807,20 @@ private fun MainHeader(
                             tint = colorScheme.primary
                         )
                     }
+                }
+
+                // P2P direct link: QR / scan / share / channel-probe entry
+                // (connects without a favorite relationship).
+                HeaderIconButton(
+                    onClick = onP2pDirectClick,
+                    contentDescription = stringResource(R.string.p2p_direct_link)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Link,
+                        contentDescription = stringResource(R.string.p2p_direct_link),
+                        modifier = Modifier.size(HeaderIconSize),
+                        tint = colorScheme.primary
+                    )
                 }
 
                 if (hasUnreadPrivateMessages.isNotEmpty()) {
