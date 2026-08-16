@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.bitchat.android.favorites.FavoritesPersistenceService
 import com.bitchat.android.nostr.NostrTransport
+import com.bitchat.android.services.ContactIdentityResolver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -126,16 +127,29 @@ object InternetP2pSignaling {
         }
     }
 
-    /** Maps a hex Nostr pubkey to the mesh peerID used as the link key. */
+    /**
+     * Maps a hex Nostr pubkey to the stable P2P identity key (noiseKeyHex of
+     * the mutual favorite). Unlike the mesh peer ID, this is available even
+     * when the peer is NOT currently on the local mesh - exactly the case
+     * the internet P2P channel exists for.
+     */
     private fun resolvePeerID(senderPubkey: String): String? {
         return try {
-            FavoritesPersistenceService.shared.findPeerIDForNostrPubkey(senderPubkey)
+            val targetHex = ContactIdentityResolver.nostrPubkeyHex(senderPubkey) ?: return null
+            FavoritesPersistenceService.shared.getAllRelationships()
+                .firstOrNull { relationship ->
+                    relationship.peerNostrPublicKey
+                        ?.let { ContactIdentityResolver.nostrPubkeyHex(it) }
+                        ?.equals(targetHex, ignoreCase = true) == true
+                }
+                ?.peerNoisePublicKey
+                ?.let { ContactIdentityResolver.noiseKeyHex(it) }
         } catch (e: Exception) {
             null
         }
     }
 
-    /** Maps a mesh peerID to the Nostr pubkey (npub or hex) for replies. */
+    /** Maps a mesh peerID / noiseKeyHex to the Nostr pubkey (npub or hex) for replies. */
     private fun resolveNostrPubkey(peerID: String): String? {
         return try {
             FavoritesPersistenceService.shared.findNostrPubkeyForPeerID(peerID)

@@ -46,10 +46,15 @@ class InternetMeshTransport(
     override val id: String = "INTERNET"
 
     private val engine = NatTraversalEngine(scope, stunServers, socketFactory = socketFactory)
-    private val links = ConcurrentHashMap<String, P2pLink>()       // peerID -> link
-    private val linkToPeer = ConcurrentHashMap<P2pLink, String>()  // link -> peerID
+    private val links = ConcurrentHashMap<String, P2pLink>()       // noiseKeyHex -> link
+    private val linkToPeer = ConcurrentHashMap<P2pLink, String>()  // link -> noiseKeyHex
     private val ingressIds = ConcurrentHashMap<P2pLink, String>()  // link -> local ingress id
     private val pending = ConcurrentHashMap.newKeySet<String>()    // peerIDs currently connecting
+    // mesh peer ID (16 hex, from packet.senderID) -> link key (noiseKeyHex).
+    // The bridge addresses peers by their 16-hex mesh peer ID; the signaling
+    // channel keys links by the stable noiseKeyHex, so both spellings must
+    // resolve to the same link.
+    private val peerAliases = ConcurrentHashMap<String, String>()
     private var monitorJob: Job? = null
 
     /**
@@ -68,6 +73,7 @@ class InternetMeshTransport(
     /**
      * Attempts to establish a direct link to [peerID] using the remote
      * candidate [candidate] obtained through the Nostr signaling channel.
+     * [peerID] is the stable noiseKeyHex identity key.
      */
     fun connectToPeer(peerID: String, candidate: PunchCandidate) {
         if (links.containsKey(peerID) || pending.contains(peerID)) return
@@ -81,12 +87,12 @@ class InternetMeshTransport(
                     links[peerID] = link
                     linkToPeer[link] = peerID
                     ingressIds[link] = "internet:$peerID"
-                    Log.i(TAG, "Link established with $peerID via ${link.endpointDescription}")
+                    Log.i(TAG, "Link established with ${peerID.take(12)}… via ${link.endpointDescription}")
                 } else {
-                    Log.w(TAG, "No direct link possible for $peerID; falling back to Nostr")
+                    Log.w(TAG, "No direct link possible for ${peerID.take(12)}…; falling back to Nostr")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "connectToPeer($peerID) failed: ${e.message}")
+                Log.e(TAG, "connectToPeer(${peerID.take(12)}…) failed: ${e.message}")
             } finally {
                 pending.remove(peerID)
             }
@@ -108,21 +114,25 @@ class InternetMeshTransport(
         }
     }
 
-    /** Closes and forgets the link for [peerID], if any. */
+    /** Closes and forgets the link for [peerID] (noiseKeyHex or mesh peer ID). */
     fun disconnectPeer(peerID: String) {
-        links.remove(peerID)?.let { link ->
+        val linkKey = resolveLinkKey(peerID) ?: return
+        links.remove(linkKey)?.let { link ->
             linkToPeer.remove(link)
             ingressIds.remove(link)
             link.close()
-            Log.i(TAG, "Disconnected from $peerID")
+            Log.i(TAG, "Disconnected from ${linkKey.take(12)}…")
         }
+        dropAliasesForLinkKey(linkKey)
     }
 
-    /** True when a direct link to [peerID] is currently up. */
-    fun isPeerConnected(peerID: String): Boolean =
-        links[peerID]?.isClosed != true
+    /** True when a direct link to [peerID] (noiseKeyHex or mesh peer ID) is up. */
+    fun isPeerConnected(peerID: String): Boolean {
+        val linkKey = resolveLinkKey(peerID) ?: return false
+        return links[linkKey]?.isClosed != true
+    }
 
-    /** Current direct-link peer IDs. */
+    /** Current direct-link peer IDs (noiseKeyHex keys). */
     fun connectedPeerIDs(): Set<String> = links.keys.toSet()
 
     /** Releases the engine and all links. */
@@ -134,6 +144,7 @@ class InternetMeshTransport(
         linkToPeer.clear()
         ingressIds.clear()
         pending.clear()
+        peerAliases.clear()
         engine.close()
     }
 
@@ -151,7 +162,8 @@ class InternetMeshTransport(
     }
 
     override fun sendPacketToPeer(peerID: String, packet: BitchatPacket): Boolean {
-        val link = links[peerID] ?: return false
+        val linkKey = resolveLinkKey(peerID) ?: return false
+        val link = links[linkKey] ?: return false
         if (link.isClosed) {
             dropClosedLinks()
             return false
@@ -175,7 +187,7 @@ class InternetMeshTransport(
     override fun cancelTransfer(transferId: String): Boolean = false
 
     override fun getDeviceAddressForPeer(peerID: String): String? =
-        links[peerID]?.endpointDescription
+        resolveLinkKey(peerID)?.let { links[it]?.endpointDescription }
 
     override fun getDeviceAddressToPeerMapping(): Map<String, String> =
         links.entries.associate { (peerID, link) ->
@@ -184,7 +196,7 @@ class InternetMeshTransport(
 
     override fun getTransportDebugInfo(): String {
         val summary = links.entries.joinToString("; ") { (peerID, link) ->
-            "$peerID=${link.endpointDescription}"
+            "${peerID.take(12)}…=${link.endpointDescription}"
         }
         return "INTERNET links: ${if (summary.isEmpty()) "none" else summary}"
     }
@@ -210,10 +222,16 @@ class InternetMeshTransport(
 
     private fun handleFrame(peerID: String, frame: ByteArray) {
         val packet = BitchatPacket.fromBinaryData(frame) ?: run {
-            Log.w(TAG, "Undecodable frame from $peerID")
+            Log.w(TAG, "Undecodable frame from ${peerID.take(12)}…")
             return
         }
         val senderHex = packet.senderID?.toHexString()?.take(16) ?: return
+        // Learn the mesh peer ID (16 hex) for this link so the bridge can
+        // address the peer by its mesh ID while the link stays keyed by
+        // noiseKeyHex.
+        if (senderHex != peerID) {
+            peerAliases[senderHex] = peerID
+        }
         val ingress = ingressIds[links[peerID]] ?: "internet:$peerID"
         onInboundPacket(packet, senderHex, peerID, ingress)
     }
@@ -224,8 +242,19 @@ class InternetMeshTransport(
             links.remove(peerID)
             linkToPeer.remove(link)
             ingressIds.remove(link)
-            Log.i(TAG, "Dropped closed link for $peerID")
+            dropAliasesForLinkKey(peerID)
+            Log.i(TAG, "Dropped closed link for ${peerID.take(12)}…")
         }
+    }
+
+    /** Resolves a peer spelling (noiseKeyHex or mesh peer ID) to the link key. */
+    private fun resolveLinkKey(peerID: String): String? {
+        if (links.containsKey(peerID)) return peerID
+        return peerAliases[peerID]
+    }
+
+    private fun dropAliasesForLinkKey(linkKey: String) {
+        peerAliases.entries.removeAll { it.value == linkKey }
     }
 
     private fun resolveIngress(ingressLinkID: String): P2pLink? {

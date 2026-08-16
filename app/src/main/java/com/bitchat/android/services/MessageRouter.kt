@@ -120,7 +120,12 @@ class MessageRouter private constructor(
         val resolution = ContactDirectory.resolve(toPeerID)
         val conversationID = resolution.conversationID
         val meshTarget = resolution.meshPeerID ?: toPeerID.takeIf { ContactIdentityResolver.isMeshPeerId(it) }
-        val nostrTarget = resolution.noiseKeyHex ?: toPeerID
+        // Stable identity key for the internet P2P channel: the favorite's
+        // Noise key hex exists even when the peer is NOT on the local mesh
+        // (the exact case P2P exists for), unlike meshPeerID which requires a
+        // live mesh connection.
+        val p2pKey = resolution.noiseKeyHex ?: meshTarget
+        val nostrTarget = p2pKey ?: toPeerID
 
         if (com.bitchat.android.nostr.GeohashAliasRegistry.contains(toPeerID)) {
             Log.d(TAG, "Routing PM via Nostr (geohash) to alias ${toPeerID.take(12)}… id=${messageID.take(8)}…")
@@ -138,18 +143,25 @@ class MessageRouter private constructor(
             Log.d(TAG, "Routing PM via mesh to ${meshTarget} msg_id=${messageID.take(8)}…")
             mesh.sendPrivateMessage(content, meshTarget, recipientNickname, messageID)
             return RouteResult.MESH
-        } else if (meshTarget != null && isInternetDirect(meshTarget)) {
+        } else if (p2pKey != null && isInternetDirect(p2pKey)) {
             // Internet P2P direct link is up (bridge forwards to the INTERNET
             // transport automatically); Noise session establishes over the link.
-            Log.d(TAG, "Routing PM via internet P2P to ${meshTarget} msg_id=${messageID.take(8)}…")
-            mesh.sendPrivateMessage(content, meshTarget, recipientNickname, messageID)
-            return RouteResult.MESH
+            Log.d(TAG, "Routing PM via internet P2P to ${p2pKey.take(12)}… msg_id=${messageID.take(8)}…")
+            if (meshTarget != null) {
+                mesh.sendPrivateMessage(content, meshTarget, recipientNickname, messageID)
+                return RouteResult.MESH
+            }
+            // Link is up but the peer has not registered as a mesh peer yet;
+            // queue and let the outbox flush once the Noise session lands.
+            Log.d(TAG, "P2P link up but no mesh peerID yet; queueing PM for ${conversationID.take(16)}…")
+            enqueue(conversationID, QueuedMessage(content, recipientNickname, messageID, clock()))
+            return RouteResult.QUEUED
         } else if (canSendViaNostr(nostrTarget)) {
             Log.d(TAG, "Routing PM via Nostr to ${conversationID.take(32)}… msg_id=${messageID.take(8)}…")
             // Opportunistically try to upgrade this favorite to a direct link so
             // subsequent messages skip the relay. Best-effort; Nostr already sent.
-            if (meshTarget != null) {
-                try { com.bitchat.android.internetp2p.InternetP2pSignaling.sendOffer(meshTarget) } catch (_: Exception) { }
+            if (p2pKey != null) {
+                try { com.bitchat.android.internetp2p.InternetP2pSignaling.sendOffer(p2pKey) } catch (_: Exception) { }
             }
             nostr.sendPrivateMessage(content, nostrTarget, recipientNickname, messageID)
             return RouteResult.NOSTR
@@ -165,8 +177,9 @@ class MessageRouter private constructor(
     fun sendReadReceipt(receipt: ReadReceipt, toPeerID: String) {
         val resolution = ContactDirectory.resolve(toPeerID)
         val meshTarget = resolution.meshPeerID ?: toPeerID.takeIf { ContactIdentityResolver.isMeshPeerId(it) }
-        val nostrTarget = resolution.noiseKeyHex ?: toPeerID
-        if (meshTarget != null && (isReady(mesh, meshTarget) || isInternetDirect(meshTarget))) {
+        val p2pKey = resolution.noiseKeyHex ?: meshTarget
+        val nostrTarget = p2pKey ?: toPeerID
+        if (meshTarget != null && (isReady(mesh, meshTarget) || isInternetDirect(p2pKey))) {
             Log.d(TAG, "Routing READ via mesh to ${meshTarget.take(8)}… id=${receipt.originalMessageID.take(8)}…")
             mesh.sendReadReceipt(receipt.originalMessageID, meshTarget, mesh.getPeerNicknames()[meshTarget] ?: mesh.myPeerID)
         } else {
@@ -187,8 +200,9 @@ class MessageRouter private constructor(
         }
         val resolution = ContactDirectory.resolve(toPeerID)
         val meshTarget = resolution.meshPeerID ?: toPeerID.takeIf { ContactIdentityResolver.isMeshPeerId(it) }
+        val p2pKey = resolution.noiseKeyHex ?: meshTarget
         val meshPathUp = meshTarget != null &&
-            (mesh.getPeerInfo(meshTarget)?.isConnected == true || isInternetDirect(meshTarget)) &&
+            (mesh.getPeerInfo(meshTarget)?.isConnected == true || isInternetDirect(p2pKey)) &&
             mesh.hasEstablishedSession(meshTarget)
         if (!meshPathUp) {
             nostr.sendDeliveryAck(messageID, resolution.noiseKeyHex ?: toPeerID)
@@ -198,8 +212,9 @@ class MessageRouter private constructor(
     fun sendFavoriteNotification(toPeerID: String, isFavorite: Boolean) {
         val resolution = ContactDirectory.resolve(toPeerID)
         val meshTarget = resolution.meshPeerID ?: toPeerID.takeIf { ContactIdentityResolver.isMeshPeerId(it) }
+        val p2pKey = resolution.noiseKeyHex ?: meshTarget
         if (meshTarget != null &&
-            (mesh.getPeerInfo(meshTarget)?.isConnected == true || isInternetDirect(meshTarget)) &&
+            (mesh.getPeerInfo(meshTarget)?.isConnected == true || isInternetDirect(p2pKey)) &&
             mesh.hasEstablishedSession(meshTarget)
         ) {
             val myNpub = try { com.bitchat.android.nostr.NostrIdentityBridge.getCurrentNostrIdentity(context)?.npub } catch (_: Exception) { null }
@@ -225,8 +240,9 @@ class MessageRouter private constructor(
             val entry = iterator.next()
             val resolution = ContactDirectory.resolve(conversationID)
             val meshTarget = resolution.meshPeerID
-            val nostrTarget = resolution.noiseKeyHex ?: conversationID
-            if (meshTarget != null && (isReady(mesh, meshTarget) || isInternetDirect(meshTarget))) {
+            val p2pKey = resolution.noiseKeyHex ?: meshTarget
+            val nostrTarget = p2pKey ?: conversationID
+            if (meshTarget != null && (isReady(mesh, meshTarget) || isInternetDirect(p2pKey))) {
                 mesh.sendPrivateMessage(entry.content, meshTarget, entry.nickname, entry.messageID)
                 iterator.remove()
             } else if (canSendViaNostr(nostrTarget)) {
@@ -324,8 +340,9 @@ class MessageRouter private constructor(
 
             val resolution = ContactDirectory.resolve(conversationID)
             val meshTarget = resolution.meshPeerID
+            val p2pKey = resolution.noiseKeyHex ?: meshTarget
 
-            if (meshTarget != null && (isReady(mesh, meshTarget) || isInternetDirect(meshTarget))) {
+            if (meshTarget != null && (isReady(mesh, meshTarget) || isInternetDirect(p2pKey))) {
                 flushOutboxFor(conversationID)
                 return@forEach
             }
@@ -396,9 +413,10 @@ class MessageRouter private constructor(
      * True when an internet P2P direct link to [peerID] is currently up. The
      * cross-transport bridge then forwards mesh sends to the INTERNET
      * transport automatically, so the mesh path is usable even without a
-     * radio link.
+     * radio link. [peerID] may be a mesh peer ID or the stable noiseKeyHex.
      */
-    private fun isInternetDirect(peerID: String): Boolean {
+    private fun isInternetDirect(peerID: String?): Boolean {
+        if (peerID == null) return false
         return try {
             com.bitchat.android.service.MeshServiceHolder.internetMeshTransport
                 ?.isPeerConnected(peerID) == true
