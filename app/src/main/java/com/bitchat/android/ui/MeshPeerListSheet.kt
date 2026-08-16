@@ -192,7 +192,7 @@ fun MeshPeerListSheet(
                 ) {
                     val peopleCount = when (selectedLocationChannel) {
                         is ChannelID.Location -> geohashPeopleCount
-                        else -> visibleConnectedPeers.count { it != viewModel.myPeerID }
+                        else -> visibleConnectedPeers.count { it != viewModel.myPeerID } + p2pPeerIDs.size
                     }
 
                     item(key = "private_conversations_header") {

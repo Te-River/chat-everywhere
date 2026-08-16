@@ -576,6 +576,20 @@ fun PeerCounter(
     val palette = LocalBitchatPalette.current
     val colorScheme = MaterialTheme.colorScheme
 
+    // Poll internet P2P direct links so the mesh-channel count includes them.
+    var p2pCount by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            p2pCount = try {
+                com.bitchat.android.service.MeshServiceHolder.internetMeshTransport
+                    ?.connectedPeerIDs()?.size ?: 0
+            } catch (_: Exception) {
+                0
+            }
+            kotlinx.coroutines.delay(2_000)
+        }
+    }
+
     // Compute channel-aware people count and color (matches iOS logic exactly)
     val (peopleCount, countColor) = when (selectedLocationChannel) {
         is com.bitchat.android.geohash.ChannelID.Location -> {
@@ -585,8 +599,9 @@ fun PeerCounter(
         }
         is com.bitchat.android.geohash.ChannelID.Mesh,
         null -> {
-            // Mesh channel: show Bluetooth-connected peers (excluding self)
-            val count = connectedPeers.size
+            // Mesh channel: show Bluetooth-connected peers (excluding self) plus
+            // any internet P2P direct links.
+            val count = connectedPeers.size + p2pCount
             Pair(count, if (isConnected && count > 0) colorScheme.secondary else palette.textTertiary)
         }
     }

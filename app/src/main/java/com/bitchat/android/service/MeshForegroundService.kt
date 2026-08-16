@@ -281,11 +281,18 @@ class MeshForegroundService : Service() {
     }
 
     private fun getUnifiedActivePeerCount(): Int {
-        return try {
+        val meshCount = try {
             unifiedMeshService?.getActivePeerCount() ?: meshService?.getActivePeerCount() ?: 0
         } catch (_: Exception) {
             0
         }
+        // Include internet P2P direct links in the visible online count.
+        val p2pCount = try {
+            MeshServiceHolder.internetMeshTransport?.connectedPeerIDs()?.size ?: 0
+        } catch (_: Exception) {
+            0
+        }
+        return meshCount + p2pCount
     }
 
     private fun hasBluetoothPermissions(): Boolean {
