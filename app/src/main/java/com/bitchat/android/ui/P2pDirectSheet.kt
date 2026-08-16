@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -74,6 +75,8 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
+private const val TAG = "P2pDirectSheet"
+
 /**
  * Peer-to-peer direct link sheet: three ways to connect WITHOUT a favorite
  * relationship, backed by [InternetP2pSignaling]:
@@ -105,11 +108,13 @@ fun P2pDirectSheet(
         // The sheet is a user-facing entry point: ensure the internet P2P
         // transport exists and signaling is attached even when the foreground
         // service never started (otherwise export/import would silently no-op).
+        Log.i(TAG, "P2pDirectSheet opened; ensuring transport")
         try {
             com.bitchat.android.service.MeshServiceHolder
                 .getInternetTransportOrCreate(context)
         } catch (_: Exception) { }
         myLink = InternetP2pSignaling.exportLinkUri()
+        Log.i(TAG, "P2pDirectSheet: myLink=${if (myLink == null) "NULL" else myLink!!.take(48) + "…"}")
     }
 
     BitchatBottomSheet(
@@ -184,6 +189,7 @@ fun P2pDirectSheet(
                 )
                 1 -> ScanTab(
                     onScan = { text ->
+                        Log.i(TAG, "P2P scan result: ${text.take(32)}…")
                         val peerID = InternetP2pSignaling.importLinkUri(text)
                         if (peerID != null) {
                             Toast.makeText(
@@ -196,6 +202,7 @@ fun P2pDirectSheet(
                                 onDismiss()
                             }
                         } else {
+                            Log.w(TAG, "P2P scan import failed")
                             Toast.makeText(
                                 context,
                                 context.getString(R.string.p2p_link_unrecognized),
@@ -209,7 +216,17 @@ fun P2pDirectSheet(
                     importText = importText,
                     onImportTextChange = { importText = it },
                     onImport = {
-                        val peerID = InternetP2pSignaling.importLinkUri(importText.trim())
+                        val raw = importText.trim()
+                        Log.i(TAG, "P2P import clicked: text=${raw.take(32)}… len=${raw.length}")
+                        if (raw.isEmpty()) {
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.p2p_link_paste_first),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            return@ImportTab
+                        }
+                        val peerID = InternetP2pSignaling.importLinkUri(raw)
                         if (peerID != null) {
                             Toast.makeText(
                                 context,
@@ -222,6 +239,7 @@ fun P2pDirectSheet(
                                 onDismiss()
                             }
                         } else {
+                            Log.w(TAG, "P2P import failed for ${raw.take(32)}…")
                             Toast.makeText(
                                 context,
                                 context.getString(R.string.p2p_link_unrecognized),
@@ -323,8 +341,9 @@ private fun ImportTab(
             textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = BitchatFontFamily)
         )
         Button(
+            // Always clickable so a tap is never silently swallowed: empty
+            // input is reported via Toast + log inside onImport instead.
             onClick = onImport,
-            enabled = importText.isNotBlank(),
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Import & connect", fontFamily = BitchatFontFamily)

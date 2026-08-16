@@ -103,6 +103,7 @@
   <string name="p2p_link_probe_channel">Probe location-channel peers</string>
   <string name="p2p_link_imported">Peer link imported</string>
   <string name="p2p_link_unrecognized">Unrecognized link</string>
+  <string name="p2p_link_paste_first">Paste a link first</string>
   <string name="p2p_link_copied">Link copied</string>
   <string name="p2p_link_probing">Probing %1$d peer(s) in channel</string>
   <string name="p2p_link_no_channel">No channel peers</string>

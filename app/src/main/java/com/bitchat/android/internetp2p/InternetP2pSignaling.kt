@@ -207,6 +207,7 @@ object InternetP2pSignaling {
      *   connection attempt started, or null when it could not be imported.
      */
     fun importLinkUri(uri: String): String? {
+        Log.i(TAG, "importLinkUri called: ${uri.take(48)}… len=${uri.length}")
         val t = ensureTransport() ?: run {
             Log.w(TAG, "Cannot import link: P2P transport unavailable")
             return null

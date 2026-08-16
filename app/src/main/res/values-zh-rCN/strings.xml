@@ -141,6 +141,7 @@
   <string name="p2p_link_probe_channel">探测位置频道内好友</string>
   <string name="p2p_link_imported">已导入对方链接</string>
   <string name="p2p_link_unrecognized">无法识别的链接</string>
+  <string name="p2p_link_paste_first">请先粘贴链接</string>
   <string name="p2p_link_copied">链接已复制</string>
   <string name="p2p_link_probing">正在探测频道内 %1$d 位用户</string>
   <string name="p2p_link_no_channel">频道内暂无用户</string>
