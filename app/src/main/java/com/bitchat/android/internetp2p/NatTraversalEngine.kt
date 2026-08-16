@@ -170,6 +170,105 @@ class NatTraversalEngine(
     }
 
     // ------------------------------------------------------------------
+    // Inbound listen (QR / share-link flow)
+    //
+    // The QR/link flow is asymmetric: the importer punches toward the
+    // generator's mapped endpoint, but the generator never called establish()
+    // (it has no candidate for the importer). Hole punching only works when
+    // BOTH sides send, so the generator must also wait for an inbound
+    // handshake and reply. We cannot validate the importer's nonce against a
+    // known candidate, so we accept any datagram/TCP frame carrying PUNCH_MAGIC
+    // and establish the link to its source; the mesh layer still authenticates
+    // the peer via the Noise handshake over the link.
+    // ------------------------------------------------------------------
+
+    /** A link established by listening, plus the peer's nonce learned from
+     *  the inbound handshake (used as a temporary link key). */
+    data class InboundLink(val link: P2pLink, val peerNonce: String)
+
+    suspend fun listenForInbound(onFrame: (ByteArray) -> Unit): InboundLink? {
+        val local = probeAndGather()
+        val socket = udpSocket ?: return null
+        val handshake = PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8)
+        val deadline = System.currentTimeMillis() + P2pConfig.ACCEPT_WAIT_MS
+
+        // UDP: watch for any inbound handshake carrying the magic.
+        val udpDeferred = CompletableDeferred<InboundLink?>()
+        val udpJob = scope.launch(Dispatchers.IO) {
+            val buf = ByteArray(2048)
+            while (isActive && System.currentTimeMillis() < deadline) {
+                val packet = DatagramPacket(buf, buf.size)
+                try {
+                    socket.soTimeout = 500
+                    socket.receive(packet)
+                } catch (e: SocketTimeoutException) {
+                    continue
+                } catch (e: Exception) {
+                    break
+                }
+                val data = buf.copyOf(packet.length)
+                if (startsWithMagic(data)) {
+                    val source = InetSocketAddress(packet.address, packet.port)
+                    // Echo our own handshake so the importer confirms the path.
+                    try {
+                        socket.send(DatagramPacket(handshake, handshake.size, source))
+                    } catch (_: Exception) { }
+                    val peerNonce = extractNonce(data)
+                    udpDeferred.complete(InboundLink(UdpLink(socket, source, onFrame, scope), peerNonce))
+                    return@launch
+                }
+            }
+            if (!udpDeferred.isCompleted) udpDeferred.complete(null)
+        }
+
+        val udpLink = withTimeoutOrNull(P2pConfig.ACCEPT_WAIT_MS) { udpDeferred.await() }
+        if (udpLink != null) {
+            udpJob.cancel()
+            Log.i(TAG, "Inbound UDP link established via ${udpLink.link.endpointDescription}")
+            return udpLink
+        }
+        udpJob.cancel()
+
+        // TCP: accept one connection whose first frame carries the magic.
+        val listener = tcpListener
+        if (listener == null) return null
+        val accepted = try {
+            withTimeoutOrNull(P2pConfig.ACCEPT_WAIT_MS) { listener.accept() }
+        } catch (_: Exception) {
+            null
+        } ?: return null
+        val synced = SyncedSocket(accepted, P2pConfig.TCP_HANDSHAKE_TIMEOUT_MS.toInt())
+        val frame = try { synced.read() } catch (_: Exception) { null }
+        if (frame == null || !startsWithMagic(frame)) {
+            try { accepted.close() } catch (_: Exception) { }
+            return null
+        }
+        try { accepted.soTimeout = SyncedSocket.DEFAULT_READ_TIMEOUT_MS.toInt() } catch (_: Exception) { }
+        val peerNonce = extractNonce(frame)
+        val link = TcpLink(synced, onFrame, scope)
+        Log.i(TAG, "Inbound TCP link established via ${link.endpointDescription}")
+        return InboundLink(link, peerNonce)
+    }
+
+    private fun startsWithMagic(data: ByteArray): Boolean {
+        if (data.size < PUNCH_MAGIC.size) return false
+        for (i in PUNCH_MAGIC.indices) {
+            if (data[i] != PUNCH_MAGIC[i]) return false
+        }
+        return true
+    }
+
+    /** Extracts the 16-byte hex nonce following the magic, or "" if absent. */
+    private fun extractNonce(data: ByteArray): String {
+        val start = PUNCH_MAGIC.size
+        return if (data.size > start) {
+            String(data, start, data.size - start, Charsets.UTF_8)
+        } else {
+            ""
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Tier 2: UDP hole punch
     // ------------------------------------------------------------------
 

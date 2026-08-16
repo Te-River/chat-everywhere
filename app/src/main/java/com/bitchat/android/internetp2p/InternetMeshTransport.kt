@@ -56,6 +56,7 @@ class InternetMeshTransport(
     // resolve to the same link.
     private val peerAliases = ConcurrentHashMap<String, String>()
     private var monitorJob: Job? = null
+    private var inboundJob: Job? = null
 
     /**
      * Starts the link monitor. Call once when the transport is brought up.
@@ -69,6 +70,47 @@ class InternetMeshTransport(
             }
         }
     }
+
+    /**
+     * Starts listening for inbound direct links (the QR / share-link flow).
+     *
+     * The importer punches toward the generator's mapped endpoint, but the
+     * generator never learns the importer's candidate - so it must simply
+     * wait for an inbound handshake and reply. This loop runs until the
+     * transport is closed; each established inbound link is registered under
+     * the peer nonce learned from the handshake (the mesh layer authenticates
+     * the real identity via the Noise handshake over the link).
+     */
+    fun listenForInboundLinks() {
+        if (inboundJob?.isActive == true) return
+        inboundJob = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                try {
+                    val inbound = engine.listenForInbound(onFrame = { frame ->
+                        // Frames arrive after registration; resolve the link key
+                        // from the link map to keep handleFrame's contract.
+                        val key = links.entries.firstOrNull { it.value.endpointDescription == inboundLinkDescription }?.key
+                            ?: return@listenForInbound
+                        handleFrame(key, frame)
+                    })
+                    if (inbound == null) continue
+                    val peerNonce = inbound.peerNonce.ifBlank { "inbound" }
+                    val key = "inbound:$peerNonce"
+                    links[key] = inbound.link
+                    linkToPeer[inbound.link] = key
+                    ingressIds[inbound.link] = "internet:$key"
+                    inboundLinkDescription = inbound.link.endpointDescription
+                    Log.i(TAG, "Inbound link registered as $key via ${inbound.link.endpointDescription}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Inbound listen failed: ${e.message}")
+                }
+                delay(500)
+            }
+        }
+    }
+
+    @Volatile
+    private var inboundLinkDescription: String? = null
 
     /**
      * Attempts to establish a direct link to [peerID] using the remote
@@ -139,6 +181,9 @@ class InternetMeshTransport(
     fun closeAll() {
         monitorJob?.cancel()
         monitorJob = null
+        inboundJob?.cancel()
+        inboundJob = null
+        inboundLinkDescription = null
         links.values.forEach { it.close() }
         links.clear()
         linkToPeer.clear()

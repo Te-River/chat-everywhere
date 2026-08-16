@@ -157,6 +157,11 @@ object InternetP2pSignaling {
             null
         } ?: return null
         val local = t.gatherLocalCandidate() ?: return null
+        // The QR/link flow is asymmetric: we generate the URI but never learn
+        // the importer's candidate, so we must start listening for the
+        // importer's inbound punch right away. Without this the importer's
+        // handshake reaches a closed NAT mapping and the link never forms.
+        t.listenForInboundLinks()
         return P2pUriCodec.encode(npub, local)
     }
 
