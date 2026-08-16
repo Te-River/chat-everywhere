@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -124,6 +125,16 @@ object InternetP2pSignaling {
             P2pControlMessage.Kind.ANSWER,
             P2pControlMessage.Kind.CANDIDATE -> {
                 t.connectToPeer(peerID, msg.candidate)
+            }
+            P2pControlMessage.Kind.CONNECTED -> {
+                // The peer already established the link (e.g. our inbound
+                // listener accepted their connection, or they punched first).
+                // Connect to them with their stated candidate, and surface the
+                // good news instead of letting a duplicate establish report
+                // failure.
+                P2pEventLog.log("收到对方已连接宣告，确认直连 ${peerID.take(12)}…")
+                t.connectToPeer(peerID, msg.candidate)
+                P2pEventLog.log("✅ 与 ${peerID.take(12)}… 的直连已确认（对方已连接）")
             }
         }
     }
@@ -273,6 +284,29 @@ object InternetP2pSignaling {
                     if (sendControlDirect(recipientHex, offer)) {
                         Log.i(TAG, "Sent OFFER back to link generator ${recipientHex.take(12)}…")
                     }
+                }
+            }
+            // Reverse announcement: once OUR direct link to the generator (A)
+            // is actually up, tell A so it stops punching / re-establishing
+            // (the OFFER/ANSWER storm seen in the field) and simply reuses the
+            // link. Poll isPeerConnected for a bounded window.
+            scope.launch {
+                val deadline = System.currentTimeMillis() + P2pConfig.PUNCH_TOTAL_TIMEOUT_MS * 3
+                while (System.currentTimeMillis() < deadline) {
+                    if (t.isPeerConnected(peerID)) {
+                        val local = t.gatherLocalCandidate()
+                        if (local != null) {
+                            val connected = P2pControlMessage.encode(
+                                P2pControlMessage.Kind.CONNECTED,
+                                local
+                            )
+                            if (sendControlDirect(recipientHex, connected)) {
+                                P2pEventLog.log("✅ 已向对方宣告直连建立（${peerID.take(12)}…）")
+                            }
+                        }
+                        return@launch
+                    }
+                    delay(P2pConfig.PUNCH_PROBE_INTERVAL_MS)
                 }
             }
         }
