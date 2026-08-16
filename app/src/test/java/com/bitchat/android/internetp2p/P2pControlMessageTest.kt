@@ -82,6 +82,19 @@ class P2pControlMessageTest {
     }
 
     /**
+     * The port convention (punchPort) must ride at the TOP LEVEL of the link
+     * so the importer always dials the scanned side's listener port.
+     */
+    @Test
+    fun `punchPort rides at top level of uri and equals candidate tcpPort`() {
+        val uri = P2pUriCodec.encode("npub1test", candidate)
+        val decoded = P2pUriCodec.decode(uri)
+        assertNotNull(decoded)
+        assertEquals(candidate.tcpPort, decoded!!.punchPort)
+        assertEquals(40001, decoded.punchPort)
+    }
+
+    /**
      * Regression: the OFFER/ANSWER control-message chain (the way the QR
      * importer sends its own candidate back to the generator) must preserve
      * lanHost too.

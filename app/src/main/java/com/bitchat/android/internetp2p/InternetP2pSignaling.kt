@@ -222,12 +222,27 @@ object InternetP2pSignaling {
             P2pEventLog.log("导入失败：无法解析链接（格式错误）")
             return null
         }
+        // Port convention: the generator (scanned side) declares its listener
+        // port at the top level of the link; dial that exact port even if the
+        // embedded candidate disagrees (follow-the-scanned-side rule).
+        val candidate = if (payload.punchPort > 0 && payload.candidate.tcpPort != payload.punchPort) {
+            P2pEventLog.log(
+                "端口约定：按被扫码方端口 ${payload.punchPort}（候选内 ${payload.candidate.tcpPort}，已对齐）"
+            )
+            payload.candidate.copy(tcpPort = payload.punchPort)
+        } else {
+            payload.candidate
+        }
         val peerID = resolvePeerID(payload.npub) ?: run {
             Log.w(TAG, "Cannot derive identity for link sender; ignoring")
             P2pEventLog.log("导入失败：无法识别对方身份")
             return null
         }
-        t.connectToPeer(peerID, payload.candidate)
+        P2pEventLog.log(
+            "端口约定：对方监听端口=${payload.punchPort.takeIf { it > 0 } ?: candidate.tcpPort}，" +
+                "局域网=${candidate.lanHost ?: "无"} IPv6=${candidate.ipv6Host ?: "无"}"
+        )
+        t.connectToPeer(peerID, candidate)
         P2pEventLog.log("已解析链接，开始连接对方…")
         Log.i(TAG, "Imported peer link, connecting to ${peerID.take(12)}…")
 

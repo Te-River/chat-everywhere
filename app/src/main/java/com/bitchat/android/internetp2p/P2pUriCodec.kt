@@ -23,10 +23,17 @@ object P2pUriCodec {
 
     /**
      * Encodes a peer-link URI for [npub] with [candidate].
+     *
+     * The generator's TCP listener port is also written at the top level
+     * (`punchPort`) so the PORT CONVENTION is explicit in the QR/link: the
+     * importer must dial this exact port, whatever the candidate payload says
+     * internally. This is the "follow the scanned side" rule - the generator
+     * is authoritative for where it listens.
      */
     fun encode(npub: String, candidate: PunchCandidate): String {
         val payload = JsonObject().apply {
             addProperty("npub", npub)
+            addProperty("punchPort", candidate.tcpPort)
             add("candidate", gson.toJsonTree(candidate))
         }
         val raw = gson.toJson(payload)
@@ -35,8 +42,9 @@ object P2pUriCodec {
     }
 
     /**
-     * Parses a peer-link URI. Returns the sender npub and candidate, or null
-     * when the URI is malformed or not a recognized bitchat-p2p link.
+     * Parses a peer-link URI. Returns the sender npub, the top-level port
+     * convention and candidate, or null when the URI is malformed or not a
+     * recognized bitchat-p2p link.
      */
     fun decode(uri: String): LinkPayload? {
         val trimmed = uri.trim()
@@ -46,9 +54,10 @@ object P2pUriCodec {
             val raw = String(Base64.getUrlDecoder().decode(b64), Charsets.UTF_8)
             val json = gson.fromJson(raw, JsonObject::class.java) ?: return null
             val npub = json.get("npub")?.asString ?: return null
+            val punchPort = json.get("punchPort")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
             val candidateJson = json.get("candidate")?.toString() ?: return null
             val candidate = PunchCandidate.fromJson(candidateJson) ?: return null
-            LinkPayload(npub = npub, candidate = candidate)
+            LinkPayload(npub = npub, punchPort = punchPort, candidate = candidate)
         } catch (e: Exception) {
             null
         }
@@ -56,6 +65,7 @@ object P2pUriCodec {
 
     data class LinkPayload(
         val npub: String,
+        val punchPort: Int = 0,
         val candidate: PunchCandidate
     )
 }

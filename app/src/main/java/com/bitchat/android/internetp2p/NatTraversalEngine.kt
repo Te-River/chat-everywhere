@@ -299,6 +299,13 @@ class NatTraversalEngine(
             try { accepted.close() } catch (_: Exception) { }
             return null
         }
+        // Echo our own handshake so the initiator (which waits for our nonce
+        // after sending its own) can validate and complete the link - the TCP
+        // mirror of the UDP branch's reply. Without this the initiator times
+        // out and reports failure even though we accepted the connection.
+        try {
+            synced.write(PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8))
+        } catch (_: Exception) { }
         try { accepted.soTimeout = SyncedSocket.DEFAULT_READ_TIMEOUT_MS.toInt() } catch (_: Exception) { }
         val peerNonce = extractNonce(frame)
         val link = TcpLink(synced, onFrame, scope)
