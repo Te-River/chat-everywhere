@@ -116,17 +116,19 @@ object InternetP2pSignaling {
      * upgraded to direct links. Peers with no Nostr pubkey, or peers we are
      * already directly connected to, are skipped. No-op when the P2P
      * transport is not attached (feature disabled).
+     *
+     * @return Number of OFFERs sent (0 when skipped).
      */
-    fun searchAll() {
+    fun searchAll(): Int {
         val t = transport ?: run {
             Log.w(TAG, "P2P search skipped: internet P2P transport not attached")
-            return
+            return 0
         }
         val favorites = try {
             FavoritesPersistenceService.shared.getAllRelationships()
         } catch (e: Exception) {
             Log.w(TAG, "P2P search skipped: cannot read favorites")
-            return
+            return 0
         }
         var offered = 0
         for (relationship in favorites) {
@@ -147,6 +149,7 @@ object InternetP2pSignaling {
             }
         }
         Log.i(TAG, "P2P search complete: OFFERs sent to $offered mutual favorite(s)")
+        return offered
     }
 
     // ------------------------------------------------------------------

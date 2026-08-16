@@ -228,13 +228,16 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
     /**
      * User-facing search: forces a fresh BLE discovery pass. No-op when the
      * BLE transport (or the GATT client role) is disabled.
+     *
+     * @return True when a scan was actually triggered.
      */
-    fun restartScanning() {
+    fun restartScanning(): Boolean {
         if (!isBleTransportEnabled()) {
             Log.i(TAG, "BLE search skipped: BLE transport disabled")
-            return
+            return false
         }
         connectionManager.restartScanning()
+        return true
     }
     
     /**

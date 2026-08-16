@@ -175,6 +175,18 @@ object MeshServiceHolder {
     }
 
     /**
+     * Outcome of a user-initiated search pass, reported back to the UI so it
+     * can surface per-transport results (Toast) while staying faithful to the
+     * "skip what is disabled" rule.
+     */
+    data class SearchResult(
+        val bleTriggered: Boolean,
+        val p2pOffers: Int
+    ) {
+        val p2pTriggered: Boolean get() = p2pOffers > 0
+    }
+
+    /**
      * User-facing search entry point: triggers BLE discovery and the internet
      * P2P probe together. Each transport is guarded by its own enable switch:
      * - BLE scanning runs only when the BLE transport is enabled.
@@ -183,21 +195,24 @@ object MeshServiceHolder {
      * Safe to call from the UI on any thread; all heavy work is dispatched
      * onto the transport scopes.
      */
-    fun searchNow() {
+    fun searchNow(): SearchResult {
         // BLE discovery (guarded inside BluetoothMeshService.restartScanning).
+        var bleTriggered = false
         try {
-            meshService?.restartScanning()
+            bleTriggered = meshService?.restartScanning() == true
         } catch (e: Exception) {
             android.util.Log.e(TAG, "BLE search failed: ${e.message}")
         }
         // Internet P2P probe (guarded inside InternetP2pSignaling.searchAll).
+        var p2pOffers = 0
         try {
             if (internetMeshTransport != null) {
-                com.bitchat.android.internetp2p.InternetP2pSignaling.searchAll()
+                p2pOffers = com.bitchat.android.internetp2p.InternetP2pSignaling.searchAll()
             }
         } catch (e: Exception) {
             android.util.Log.e(TAG, "P2P search failed: ${e.message}")
         }
+        return SearchResult(bleTriggered = bleTriggered, p2pOffers = p2pOffers)
     }
 
     @Synchronized

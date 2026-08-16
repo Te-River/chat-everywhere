@@ -653,7 +653,8 @@ fun ChatHeaderContent(
     onShowAppInfo: () -> Unit,
     onLocationChannelsClick: () -> Unit,
     onLocationNotesClick: () -> Unit,
-    onSearchClick: () -> Unit
+    onSearchClick: () -> Unit,
+    isSearching: Boolean = false
 ) {
     val colorScheme = MaterialTheme.colorScheme
 
@@ -678,6 +679,7 @@ fun ChatHeaderContent(
                 onLocationChannelsClick = onLocationChannelsClick,
                 onLocationNotesClick = onLocationNotesClick,
                 onSearchClick = onSearchClick,
+                isSearching = isSearching,
                 viewModel = viewModel
             )
         }
@@ -719,6 +721,7 @@ private fun MainHeader(
     onLocationChannelsClick: () -> Unit,
     onLocationNotesClick: () -> Unit,
     onSearchClick: () -> Unit,
+    isSearching: Boolean,
     viewModel: ChatViewModel
 ) {
     val colorScheme = MaterialTheme.colorScheme
@@ -787,12 +790,20 @@ private fun MainHeader(
                     onClick = onSearchClick,
                     contentDescription = stringResource(R.string.cd_search_peers)
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Search,
-                        contentDescription = stringResource(R.string.cd_search_peers),
-                        modifier = Modifier.size(HeaderIconSize),
-                        tint = colorScheme.primary
-                    )
+                    if (isSearching) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(HeaderIconSize),
+                            strokeWidth = 2.dp,
+                            color = colorScheme.primary
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.Search,
+                            contentDescription = stringResource(R.string.cd_search_peers),
+                            modifier = Modifier.size(HeaderIconSize),
+                            tint = colorScheme.primary
+                        )
+                    }
                 }
 
                 if (hasUnreadPrivateMessages.isNotEmpty()) {

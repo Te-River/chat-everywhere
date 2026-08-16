@@ -21,6 +21,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.IconButton
@@ -766,6 +768,11 @@ private fun ChatFloatingHeader(
     val context = androidx.compose.ui.platform.LocalContext.current
     val locationManager = remember { com.bitchat.android.geohash.LocationChannelManager.getInstance(context) }
 
+    // One-tap search progress: the header swaps its search glyph for a spinner
+    // while the BLE/P2P search pass runs, then reports per-transport results.
+    var isSearching by remember { mutableStateOf(false) }
+    val searchScope = rememberCoroutineScope()
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -810,8 +817,36 @@ private fun ChatFloatingHeader(
             // One-tap search: BLE discovery + internet P2P probe, each guarded
             // by its own enable switch inside MeshServiceHolder.searchNow().
             onSearchClick = {
-                com.bitchat.android.service.MeshServiceHolder.searchNow()
-            }
+                if (!isSearching) {
+                    isSearching = true
+                    val result = com.bitchat.android.service.MeshServiceHolder.searchNow()
+                    val bleText = context.getString(
+                        if (result.bleTriggered) {
+                            com.bitchat.android.R.string.search_result_ble_on
+                        } else {
+                            com.bitchat.android.R.string.search_result_ble_off
+                        }
+                    )
+                    val p2pText = if (result.p2pTriggered) {
+                        context.getString(
+                            com.bitchat.android.R.string.search_result_p2p_on,
+                            result.p2pOffers
+                        )
+                    } else {
+                        context.getString(com.bitchat.android.R.string.search_result_p2p_off)
+                    }
+                    android.widget.Toast.makeText(
+                        context,
+                        "$bleText $p2pText",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    searchScope.launch {
+                        delay(1_500)
+                        isSearching = false
+                    }
+                }
+            },
+            isSearching = isSearching
         )
     }
 }

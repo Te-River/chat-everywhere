@@ -118,6 +118,11 @@
   <string name="cd_remove_favorite">从收藏中移除</string>
   <string name="cd_add_bookmark">添加书签</string>
   <string name="cd_nostr_reachable">可通过 Nostr 联系</string>
+  <string name="cd_search_peers">搜索附近与在线好友</string>
+  <string name="search_result_ble_on">搜索中… 蓝牙扫描已启动</string>
+  <string name="search_result_ble_off">搜索中… 蓝牙未开启，已跳过</string>
+  <string name="search_result_p2p_on">P2P 探测 %1$d 位好友</string>
+  <string name="search_result_p2p_off">P2P 未开启，已跳过</string>
   <string name="cd_unread_private_messages">未读私信</string>
   <string name="cd_location_notes">位置笔记</string>
   <string name="cd_teleported">已传送</string>
