@@ -156,6 +156,7 @@ object MeshServiceHolder {
         if (existing != null) return existing
         val created = InternetMeshTransport(
             scope = internetScope,
+            context = context.applicationContext,
             onInboundPacket = { packet, peerID, relayAddress, ingressLinkID ->
                 meshService?.processInboundFromInternet(
                     packet = packet,

@@ -30,6 +30,7 @@ class InternetMeshTransport(
     private val scope: CoroutineScope,
     private val stunServers: List<InetSocketAddress> = P2pConfig.resolveStunServers(),
     private val socketFactory: (() -> DatagramSocket)? = null,
+    private val context: android.content.Context? = null,
     private val onInboundPacket: (
         packet: BitchatPacket,
         peerID: String?,
@@ -45,7 +46,23 @@ class InternetMeshTransport(
 
     override val id: String = "INTERNET"
 
-    private val engine = NatTraversalEngine(scope, stunServers, socketFactory = socketFactory)
+    private val engine = NatTraversalEngine(
+        scope,
+        stunServers,
+        socketFactory = socketFactory,
+        // Prefer the CURRENT active network's interface (Wi-Fi or mobile data)
+        // when picking a global IPv6 to advertise, so a device with several up
+        // interfaces does not advertise an IPv6 that is not actually routed.
+        activeInterfaceNameProvider = {
+            try {
+                val cm = context?.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+                    as? android.net.ConnectivityManager
+                cm?.activeNetwork?.let { cm.getLinkProperties(it)?.interfaceName }
+            } catch (_: Exception) {
+                null
+            }
+        }
+    )
     private val links = ConcurrentHashMap<String, P2pLink>()       // noiseKeyHex -> link
     private val linkToPeer = ConcurrentHashMap<P2pLink, String>()  // link -> noiseKeyHex
     private val ingressIds = ConcurrentHashMap<P2pLink, String>()  // link -> local ingress id

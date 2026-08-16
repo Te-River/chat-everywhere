@@ -33,9 +33,30 @@ and portable across implementations.
 - Asynchronous tests must have a deterministic completion condition and a
   bounded timeout.
 - A fixed bug must retain its smallest reproducing input as a regression test.
-- Network / P2P behavior must be exercised across the component switch
-  combinations: Wi-Fi, Bluetooth, and mobile data each tested on and off
-  (e.g. mobile-data-only with Bluetooth off, Wi-Fi-only, all on, all off).
+- Network / P2P behavior must be exercised across the FULL BIDIRECTIONAL
+  component-switch matrix: for both the local device (A) and the remote peer
+  (B), each of Wi-Fi, Bluetooth, and mobile data is tested both on and off.
+  Each side therefore has 2^3 = 8 states, giving 8 × 8 = 64 ordered pairs:
+
+  ```
+  State bits (per side):  Wi-Fi | Bluetooth | Mobile data   (1 = on, 0 = off)
+  A: 000  001  010  011  100  101  110  111
+  B: 000  001  010  011  100  101  110  111
+  ```
+
+  Every ordered pair (A,B) must be considered. At minimum the following
+  representative pairs must be explicitly tested, and the transport-selection
+  logic must be verifiable (injectable network-state) so any of the 64
+  combinations can be exercised without physical hardware:
+
+  | A (local) | B (remote) | Expectation |
+  |---|---|---|
+  | 111 all on | 100 mobile-data only | Internet P2P direct (IPv6/UDP/TCP), no local mesh |
+  | 111 all on | 111 all on | Local mesh preferred; Internet P2P as fallback |
+  | 100 mobile-data only | 100 mobile-data only | Internet P2P direct over cellular CGNAT |
+  | 011 Wi-Fi+Bluetooth | 011 Wi-Fi+Bluetooth | Local mesh / Wi-Fi Aware preferred |
+  | 000 all off | 000 all off | Nothing reachable; Nostr relay fallback only |
+
   Testing a single network state is not sufficient; the transport-selection
   logic must be verified for every combination it can observe.
 

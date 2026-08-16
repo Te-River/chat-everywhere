@@ -46,7 +46,8 @@ class NatTraversalEngine(
     private val scope: CoroutineScope,
     private val stunServers: List<InetSocketAddress> = P2pConfig.resolveStunServers(),
     private val stunTimeoutMs: Long = P2pConfig.DEFAULT_STUN_TIMEOUT_MS,
-    private val socketFactory: (() -> DatagramSocket)? = null
+    private val socketFactory: (() -> DatagramSocket)? = null,
+    private val activeInterfaceNameProvider: (() -> String?)? = null
 ) {
 
     companion object {
@@ -480,25 +481,44 @@ class NatTraversalEngine(
     }
 
     /**
-     * Finds a global-scope IPv6 address on any up, non-loopback interface.
-     * Returns null when the device has no usable global IPv6 (e.g., v4-only
-     * CGNAT with no v6 prefix).
+     * Finds a global-scope IPv6 address. Prefers the CURRENT ACTIVE network
+     * interface (Wi-Fi or mobile data) when known, so a device with several
+     * up interfaces (e.g. Wi-Fi + cellular) advertises the IPv6 that is
+     * actually in use - important because some Wi-Fi networks block IPv6
+     * egress, and on cellular CGNAT the IPv6 direct tier may be the only
+     * viable path. Falls back to scanning every up interface when the active
+     * one has no usable global IPv6.
      */
     private fun findGlobalIpv6(): InetSocketAddress? {
+        val preferredName = try { activeInterfaceNameProvider?.invoke() } catch (_: Exception) { null }
+        if (preferredName != null) {
+            findGlobalIpv6OnInterface(preferredName)?.let { return it }
+        }
         return try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
             for (iface in interfaces) {
                 if (!iface.isUp || iface.isLoopback) continue
-                for (addr in iface.inetAddresses) {
-                    if (addr is Inet6Address) {
-                        val v6 = addr as Inet6Address
-                        if (v6.isLinkLocalAddress || v6.isLoopbackAddress || v6.isSiteLocalAddress) {
-                            continue
-                        }
-                        if (v6.isIPv4CompatibleAddress) continue
-                        if (v6.address[0].toInt() and 0xFF == 0xFE) continue // link-local FE80::/10 family
-                        return InetSocketAddress(v6, 0)
+                findGlobalIpv6OnInterface(iface.name)?.let { return it }
+            }
+            null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun findGlobalIpv6OnInterface(interfaceName: String): InetSocketAddress? {
+        return try {
+            val iface = NetworkInterface.getByName(interfaceName) ?: return null
+            if (!iface.isUp || iface.isLoopback) return null
+            for (addr in iface.inetAddresses) {
+                if (addr is Inet6Address) {
+                    val v6 = addr as Inet6Address
+                    if (v6.isLinkLocalAddress || v6.isLoopbackAddress || v6.isSiteLocalAddress) {
+                        continue
                     }
+                    if (v6.isIPv4CompatibleAddress) continue
+                    if (v6.address[0].toInt() and 0xFF == 0xFE) continue // link-local FE80::/10 family
+                    return InetSocketAddress(v6, 0)
                 }
             }
             null
