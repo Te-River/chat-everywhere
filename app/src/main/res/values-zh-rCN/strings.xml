@@ -145,6 +145,7 @@
   <string name="p2p_link_probing">正在探测频道内 %1$d 位用户</string>
   <string name="p2p_link_no_channel">频道内暂无用户</string>
   <string name="p2p_link_unverified_warning">身份未验证：对方并非互关好友。Noise 握手仍会加密并认证会话。</string>
+  <string name="p2p_section_title">P2P</string>
   <string name="cd_unread_private_messages">未读私信</string>
   <string name="cd_location_notes">位置笔记</string>
   <string name="cd_teleported">已传送</string>

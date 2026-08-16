@@ -107,6 +107,7 @@
   <string name="p2p_link_probing">Probing %1$d peer(s) in channel</string>
   <string name="p2p_link_no_channel">No channel peers</string>
   <string name="p2p_link_unverified_warning">Identity is unverified: this peer is not a mutual favorite. The Noise handshake still encrypts and authenticates the session.</string>
+  <string name="p2p_section_title">P2P</string>
   <string name="cd_unread_private_messages">Messages</string>
   <string name="conversations">Conversations</string>
   <string name="offline_not_in_mesh">Offline · not in mesh</string>

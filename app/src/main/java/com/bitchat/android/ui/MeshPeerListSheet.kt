@@ -146,6 +146,21 @@ fun MeshPeerListSheet(
     val sheetScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
+    // P2P direct-link peers (imported via QR / share link / geohash channel).
+    // Polled while the sheet is open so newly established links appear live.
+    var p2pPeerIDs by remember { mutableStateOf(emptySet<String>()) }
+    LaunchedEffect(isPresented) {
+        while (true) {
+            p2pPeerIDs = try {
+                com.bitchat.android.service.MeshServiceHolder.internetMeshTransport
+                    ?.connectedPeerIDs() ?: emptySet()
+            } catch (_: Exception) {
+                emptySet()
+            }
+            delay(2_000)
+        }
+    }
+
     // Bottom sheet state
     val sheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = true
@@ -404,6 +419,46 @@ fun MeshPeerListSheet(
                         }
                     }
 
+                    // P2P direct-link peers (imported via QR / share link / geohash channel)
+                    if (p2pPeerIDs.isNotEmpty()) {
+                        item(key = "p2p_section") {
+                            Column {
+                                SheetIconSectionHeader(
+                                    iconRes = R.drawable.ic_spec_wifi,
+                                    title = stringResource(R.string.p2p_section_title),
+                                    modifier = Modifier.padding(
+                                        top = if (
+                                            joinedChannels.isNotEmpty() ||
+                                            conversations.isNotEmpty()
+                                        ) 20.dp else 8.dp
+                                    )
+                                )
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = AboutHorizontalPadding)
+                                        .padding(top = 10.dp),
+                                    color = MaterialTheme.colorScheme.surface,
+                                    shape = AboutCardShape
+                                ) {
+                                    Column {
+                                        p2pPeerIDs.toList().sorted().forEachIndexed { index, peerID ->
+                                            if (index > 0) SheetCardDivider()
+                                            P2pPeerRow(
+                                                displayName = p2pDisplayName(peerID),
+                                                colorScheme = colorScheme,
+                                                onPrivateChatStart = {
+                                                    viewModel.showPrivateChatSheet(peerID)
+                                                    onDismiss()
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // People / geohash participants
                     item(key = "people_section") {
                         when (selectedLocationChannel) {
@@ -624,6 +679,67 @@ private fun ChannelRow(
 
         CloseButton(onClick = onLeaveChannel)
     }
+}
+
+/**
+ * Row for a peer reachable over a direct internet P2P link (imported via QR,
+ * share link, or geohash channel probe). Shows a status dot + resolved
+ * display name; tapping opens the private chat.
+ */
+@Composable
+private fun P2pPeerRow(
+    displayName: String,
+    colorScheme: ColorScheme,
+    onPrivateChatStart: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onPrivateChatStart)
+            .padding(horizontal = SheetRowHorizontal, vertical = SheetRowVertical),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier.size(SheetRowLeadingSlot),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(SheetRowSelectedDot)
+                    .background(colorScheme.primary, CircleShape)
+            )
+        }
+
+        Spacer(modifier = Modifier.width(SheetRowLeadingGutter))
+
+        Text(
+            text = displayName,
+            fontFamily = BitchatFontFamily,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            color = colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * Resolves a display name for a P2P direct-link peer key. The key is either a
+ * noiseKeyHex (favorite) or a `nostr_<pub16>` stranger alias; when no
+ * nickname is known, falls back to a short form of the identity key.
+ */
+private fun p2pDisplayName(peerID: String): String {
+    val resolved = try {
+        ContactDirectory.resolve(peerID).displayName
+    } catch (_: Exception) {
+        null
+    }
+    if (!resolved.isNullOrBlank() && !resolved.equals("Unknown", ignoreCase = true)) {
+        return resolved
+    }
+    return peerID.take(12) + "…"
 }
 
 
