@@ -88,6 +88,11 @@ object InternetP2pSignaling {
         try {
             com.bitchat.android.services.ContactDirectory.cacheP2pCandidate(peerID, msg.candidate)
         } catch (_: Exception) { }
+        P2pEventLog.log(
+            "收到 ${msg.kind}：对方候选 局域网=${msg.candidate.lanHost ?: "无"} " +
+                "IPv6=${msg.candidate.ipv6Host ?: "无"} 公网=${msg.candidate.mappedHost ?: "无"} " +
+                "端口=${msg.candidate.tcpPort} nonce=${msg.candidate.nonce.take(8)}…"
+        )
         when (msg.kind) {
             P2pControlMessage.Kind.OFFER -> {
                 // Answer with our own candidate, then both sides punch.

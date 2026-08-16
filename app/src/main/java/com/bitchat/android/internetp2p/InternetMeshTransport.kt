@@ -161,6 +161,20 @@ class InternetMeshTransport(
             P2pEventLog.log("✅ 复用入站直连：${peerID.take(12)}… via ${existingInbound.endpointDescription}")
             return
         }
+        // The OFFER candidate the generator received may not carry the same
+        // nonce as the inbound handshake (e.g. it was cached earlier), so the
+        // exact-key match above can miss even though an inbound link from this
+        // very peer is already up. Fall back to reusing ANY unclosed inbound
+        // link - the mesh layer still authenticates the peer over the link.
+        val anyInbound = links.entries.firstOrNull { (key, link) ->
+            key.startsWith("inbound:") && !link.isClosed
+        }
+        if (anyInbound != null) {
+            peerAliases[peerID] = anyInbound.key
+            Log.i(TAG, "Reused inbound link ${anyInbound.key} for ${peerID.take(12)}… (nonce mismatch)")
+            P2pEventLog.log("✅ 复用入站直连：${peerID.take(12)}… via ${anyInbound.value.endpointDescription}")
+            return
+        }
 
         pending.add(peerID)
         scope.launch(Dispatchers.IO) {
