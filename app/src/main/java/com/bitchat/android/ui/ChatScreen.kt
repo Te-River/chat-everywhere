@@ -768,10 +768,24 @@ private fun ChatFloatingHeader(
     val context = androidx.compose.ui.platform.LocalContext.current
     val locationManager = remember { com.bitchat.android.geohash.LocationChannelManager.getInstance(context) }
 
-    // One-tap search progress: the header swaps its search glyph for a spinner
-    // while the BLE/P2P search pass runs, then reports per-transport results.
-    var isSearching by remember { mutableStateOf(false) }
-    val searchScope = rememberCoroutineScope()
+    // Continuous search state: the header swaps its search glyph for a spinner
+    // for the whole session, and Toast reports start / manual stop / timeout.
+    val isSearching by com.bitchat.android.service.PeerSearchController.isSearching
+        .collectAsStateWithLifecycle()
+    val searchStopReason by com.bitchat.android.service.PeerSearchController.stopReason
+        .collectAsStateWithLifecycle()
+
+    // Toast when a search session ends (user stop or 3-minute no-discovery timeout).
+    LaunchedEffect(searchStopReason) {
+        val reason = searchStopReason ?: return@LaunchedEffect
+        val message = when (reason) {
+            com.bitchat.android.service.PeerSearchController.StopReason.MANUAL ->
+                context.getString(com.bitchat.android.R.string.search_stopped)
+            com.bitchat.android.service.PeerSearchController.StopReason.TIMEOUT ->
+                context.getString(com.bitchat.android.R.string.search_timeout)
+        }
+        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+    }
 
     Box(
         modifier = Modifier
@@ -814,39 +828,20 @@ private fun ChatFloatingHeader(
                 locationManager.refreshChannels()
                 onLocationNotesClick()
             },
-            // One-tap search: BLE discovery + internet P2P probe, each guarded
-            // by its own enable switch inside MeshServiceHolder.searchNow().
+            // Continuous search toggle: tapping starts a persistent BLE + P2P
+            // search session (until the user taps again or 3 minutes pass with
+            // no new peer); each transport is guarded by its own enable switch
+            // inside PeerSearchController.
             onSearchClick = {
-                if (!isSearching) {
-                    isSearching = true
-                    val result = com.bitchat.android.service.MeshServiceHolder.searchNow()
-                    val bleText = context.getString(
-                        if (result.bleTriggered) {
-                            com.bitchat.android.R.string.search_result_ble_on
-                        } else {
-                            com.bitchat.android.R.string.search_result_ble_off
-                        }
-                    )
-                    val p2pText = when {
-                        !result.p2pEnabled ->
-                            context.getString(com.bitchat.android.R.string.search_result_p2p_off)
-                        !result.p2pTriggered ->
-                            context.getString(com.bitchat.android.R.string.search_result_p2p_no_peers)
-                        else ->
-                            context.getString(
-                                com.bitchat.android.R.string.search_result_p2p_on,
-                                result.p2pOffers
-                            )
-                    }
+                if (isSearching) {
+                    com.bitchat.android.service.PeerSearchController.stopSearch()
+                } else {
+                    com.bitchat.android.service.PeerSearchController.startSearch()
                     android.widget.Toast.makeText(
                         context,
-                        "$bleText $p2pText",
+                        context.getString(com.bitchat.android.R.string.search_started),
                         android.widget.Toast.LENGTH_SHORT
                     ).show()
-                    searchScope.launch {
-                        delay(1_500)
-                        isSearching = false
-                    }
                 }
             },
             isSearching = isSearching

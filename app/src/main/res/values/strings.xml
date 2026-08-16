@@ -86,6 +86,9 @@
   <string name="search_result_p2p_on">P2P probing %1$d peer(s)</string>
   <string name="search_result_p2p_no_peers">P2P on, but no online favorites to probe</string>
   <string name="search_result_p2p_off">P2P skipped (disabled)</string>
+  <string name="search_started">Searching for peers…</string>
+  <string name="search_stopped">Search stopped</string>
+  <string name="search_timeout">Search ended: no new peers found</string>
   <string name="cd_unread_private_messages">Messages</string>
   <string name="conversations">Conversations</string>
   <string name="offline_not_in_mesh">Offline · not in mesh</string>
