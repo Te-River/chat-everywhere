@@ -147,6 +147,21 @@ class InternetMeshTransport(
         // Already have a link for this peer (direct or via an inbound alias)?
         // Do not re-establish - treat it as connected.
         if (resolveLinkKey(peerID) != null || pending.contains(peerID)) return
+
+        // The generator side may already hold an inbound link from this peer
+        // (listenForInboundLinks). Its key is "inbound:<peer nonce>"; reusing
+        // it here avoids running establish() against the SAME TCP listener /
+        // UDP socket the inbound listen loop is using - a race that makes the
+        // direct link succeed only probabilistically.
+        val inboundKey = "inbound:${candidate.nonce}"
+        val existingInbound = links[inboundKey]
+        if (existingInbound != null && !existingInbound.isClosed) {
+            peerAliases[peerID] = inboundKey
+            Log.i(TAG, "Reused inbound link $inboundKey for ${peerID.take(12)}…")
+            P2pEventLog.log("✅ 复用入站直连：${peerID.take(12)}… via ${existingInbound.endpointDescription}")
+            return
+        }
+
         pending.add(peerID)
         scope.launch(Dispatchers.IO) {
             try {
