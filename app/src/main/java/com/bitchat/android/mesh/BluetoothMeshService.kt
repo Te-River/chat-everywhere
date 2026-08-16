@@ -201,11 +201,19 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
     }
 
     private fun broadcastRoutedPacket(routed: RoutedPacket): Boolean {
-        if (!isBleTransportEnabled()) return false
-        val queued = connectionManager.broadcastPacket(routed)
-        if (!queued) return false
-        TransportBridgeService.broadcast("BLE", routed)
-        return true
+        // Do NOT hard-gate on BLE: when Bluetooth is disabled the packet must
+        // still reach other registered transports (Wi-Fi Aware, INTERNET P2P)
+        // via the bridge. Gate only the BLE write itself.
+        var accepted = false
+        try {
+            if (isBleTransportEnabled()) {
+                accepted = connectionManager.broadcastPacket(routed)
+            }
+        } catch (_: Exception) { }
+        try {
+            TransportBridgeService.broadcast("BLE", routed)
+        } catch (_: Exception) { }
+        return accepted
     }
 
     private suspend fun broadcastRoutedPacketAndReport(routed: RoutedPacket): Boolean {

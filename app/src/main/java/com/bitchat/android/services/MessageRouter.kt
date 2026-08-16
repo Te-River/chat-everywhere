@@ -147,15 +147,13 @@ class MessageRouter private constructor(
             // Internet P2P direct link is up (bridge forwards to the INTERNET
             // transport automatically); Noise session establishes over the link.
             Log.d(TAG, "Routing PM via internet P2P to ${p2pKey.take(12)}… msg_id=${messageID.take(8)}…")
-            if (meshTarget != null) {
-                mesh.sendPrivateMessage(content, meshTarget, recipientNickname, messageID)
-                return RouteResult.MESH
-            }
-            // Link is up but the peer has not registered as a mesh peer yet;
-            // queue and let the outbox flush once the Noise session lands.
-            Log.d(TAG, "P2P link up but no mesh peerID yet; queueing PM for ${conversationID.take(16)}…")
-            enqueue(conversationID, QueuedMessage(content, recipientNickname, messageID, clock()))
-            return RouteResult.QUEUED
+            // meshTarget (a live mesh peer ID) may still be null for a stranger:
+            // the link is keyed by the nostr_ alias / noiseKeyHex instead. The
+            // INTERNET transport resolves that key, so send directly through it
+            // rather than queueing forever behind a null meshTarget.
+            val target = meshTarget ?: p2pKey
+            mesh.sendPrivateMessage(content, target, recipientNickname, messageID)
+            return RouteResult.MESH
         } else if (canSendViaNostr(nostrTarget)) {
             Log.d(TAG, "Routing PM via Nostr to ${conversationID.take(32)}… msg_id=${messageID.take(8)}…")
             // Opportunistically try to upgrade this favorite to a direct link so
