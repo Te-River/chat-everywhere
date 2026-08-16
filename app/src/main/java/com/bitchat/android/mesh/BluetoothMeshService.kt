@@ -1369,6 +1369,66 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
     }
 
     /**
+     * Sends our identity announcement DIRECTLY over the internet P2P link to
+     * [peerID], bypassing the BLE transport gate. The regular path
+     * ([sendAnnouncementToPeer]) funnels through broadcastRoutedPacket, whose
+     * first line bails out when Bluetooth is disabled - on a
+     * mobile-data-only setup (the exact case internet P2P exists for) the
+     * announcement never leaves the device, the peer is never registered as a
+     * mesh peer, meshTarget stays null and private messages queue forever.
+     */
+    fun sendAnnouncementToPeerViaInternet(
+        peerID: String,
+        transport: com.bitchat.android.internetp2p.InternetMeshTransport
+    ) {
+        if (peerManager.hasAnnouncedToPeer(peerID)) return
+        val nickname = try { com.bitchat.android.services.NicknameProvider.getNickname(context, myPeerID) } catch (_: Exception) { myPeerID }
+        val staticKey = encryptionService.getStaticPublicKey() ?: run {
+            Log.e(TAG, "No static public key available for peer announcement")
+            return
+        }
+        val signingKey = encryptionService.getSigningPublicKey() ?: run {
+            Log.e(TAG, "No signing public key available for peer announcement")
+            return
+        }
+        val announcement = IdentityAnnouncement.forLocalPeer(nickname, staticKey, signingKey)
+        var tlvPayload = announcement.encode() ?: run {
+            Log.e(TAG, "Failed to encode peer announcement as TLV")
+            return
+        }
+        try {
+            val directPeers = getDirectPeerIDsForGossip()
+            if (directPeers.isNotEmpty()) {
+                tlvPayload = tlvPayload + com.bitchat.android.services.meshgraph.GossipTLV.encodeNeighbors(directPeers)
+            }
+            try {
+                com.bitchat.android.services.meshgraph.MeshGraphService.getInstance()
+                    .updateFromAnnouncement(myPeerID, nickname, directPeers, System.currentTimeMillis().toULong())
+            } catch (_: Exception) { }
+        } catch (_: Exception) { }
+        val packet = BitchatPacket(
+            type = MessageType.ANNOUNCE.value,
+            ttl = MAX_TTL,
+            senderID = myPeerID,
+            payload = tlvPayload
+        )
+        val signedPacket = encryptionService.signData(packet.toBinaryDataForSigning()!!)?.let { signature ->
+            packet.copy(signature = signature)
+        } ?: packet
+        val delivered = try {
+            transport.sendPacketToPeer(peerID, signedPacket)
+        } catch (e: Exception) {
+            Log.e(TAG, "Announce over INTERNET failed: ${e.message}")
+            false
+        }
+        if (delivered) {
+            peerManager.markPeerAsAnnouncedTo(peerID)
+            try { gossipSyncManager.onPublicPacketSeen(signedPacket) } catch (_: Exception) { }
+            Log.i(TAG, "Sent announcement to $peerID via INTERNET link")
+        }
+    }
+
+    /**
      * Collect up to 10 direct neighbors for gossip TLV.
      */
     private fun getDirectPeerIDsForGossip(): List<String> {

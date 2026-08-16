@@ -170,6 +170,17 @@ object MeshServiceHolder {
             // the router queues messages forever (meshTarget == null). Kick the
             // registration as soon as the link comes up.
             onLinkEstablished = { peerID ->
+                // Directly over the INTERNET link: the regular BLE announcement
+                // path bails out when Bluetooth is disabled, so on a
+                // mobile-data-only setup the peer would never be registered.
+                // internetMeshTransport is set by the time a link can exist.
+                internetMeshTransport?.let { t ->
+                    try {
+                        meshService?.sendAnnouncementToPeerViaInternet(peerID, t)
+                    } catch (e: Exception) {
+                        android.util.Log.w(TAG, "Announce via INTERNET after link up failed: ${e.message}")
+                    }
+                }
                 try {
                     meshService?.sendAnnouncementToPeer(peerID)
                 } catch (e: Exception) {
