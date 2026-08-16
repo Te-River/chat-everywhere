@@ -64,7 +64,8 @@ class NatTraversalEngine(
         val mappedAddress: InetSocketAddress?,
         val ipv6Global: InetSocketAddress?,
         val natType: NatTypeDetector.NatType,
-        val tcpPort: Int
+        val tcpPort: Int,
+        val lanHost: String? = null
     )
 
     @Volatile private var profile: LocalProfile? = null
@@ -114,7 +115,8 @@ class NatTraversalEngine(
             mappedAddress = natProbe.mappedAddress,
             ipv6Global = ipv6,
             natType = natProbe.natType,
-            tcpPort = try { listener.localPort } catch (_: Exception) { 0 }
+            tcpPort = try { listener.localPort } catch (_: Exception) { 0 },
+            lanHost = findLanIpv4()
         )
         profile = p
         tcpListener = listener
@@ -124,7 +126,7 @@ class NatTraversalEngine(
         )
         P2pEventLog.log(
             "本机 NAT 探测：类型=${p.natType} 公网端点=${p.mappedAddress ?: "无(STUN失败)"} " +
-                "IPv6=${p.ipv6Global?.address?.hostAddress ?: "无"} 端口=${p.tcpPort}"
+                "IPv6=${p.ipv6Global?.address?.hostAddress ?: "无"} 局域网=${p.lanHost ?: "无"} 端口=${p.tcpPort}"
         )
         p
     }
@@ -136,8 +138,29 @@ class NatTraversalEngine(
     suspend fun establish(peer: PunchCandidate, onFrame: (ByteArray) -> Unit): P2pLink? {
         val local = probeAndGather()
         val socket = udpSocket ?: return null
+        val peerLan = peer.lanEndpoint
         val peerIpv6 = peer.ipv6Global
         val peerMapped = peer.mappedAddress
+
+        // Tier 0: LAN direct (both peers share a private network). Fastest and
+        // most reliable - no NAT traversal needed at all. Prefer this over
+        // internet paths so same-Wi-Fi peers connect instantly.
+        if (peerLan != null && local.lanHost != null) {
+            Log.i(TAG, "Tier 0: LAN direct to ${peerLan.address.hostAddress}")
+            P2pEventLog.log("Tier 0：尝试局域网直连 ${peerLan.address.hostAddress}")
+            val link = tryTcpConnect(
+                target = peerLan,
+                peerNonce = peer.nonce,
+                onFrame = onFrame,
+                accept = true
+            )
+            if (link != null) return link
+            P2pEventLog.log("Tier 0 失败：局域网直连未建立，继续尝试互联网路径")
+        } else {
+            P2pEventLog.log(
+                "Tier 0 跳过：无局域网地址（本机=${local.lanHost ?: "无"} 对方=${peerLan?.address?.hostAddress ?: "无"}）"
+            )
+        }
 
         // Tier 1: IPv6 direct TCP (both peers have global IPv6).
         if (peerIpv6 != null && local.ipv6Global != null) {
@@ -527,6 +550,36 @@ class NatTraversalEngine(
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * Finds a private IPv4 (LAN) address on any up, non-loopback interface.
+     * Peers on the same local network then prefer a direct LAN link (Tier 0)
+     * over internet hole punching. Returns null when no LAN address exists
+     * (e.g. mobile-data-only with no Wi-Fi).
+     */
+    private fun findLanIpv4(): String? {
+        return try {
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
+            for (iface in interfaces) {
+                if (!iface.isUp || iface.isLoopback) continue
+                for (addr in iface.inetAddresses) {
+                    if (addr is java.net.Inet4Address) {
+                        val host = addr.hostAddress ?: continue
+                        if (isPrivateIpv4(host)) return host
+                    }
+                }
+            }
+            null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun isPrivateIpv4(host: String): Boolean {
+        return host.startsWith("10.") ||
+            host.startsWith("192.168.") ||
+            host.startsWith("172.") && host.substringAfter("172.", "").substringBefore(".").toIntOrNull()?.let { it in 16..31 } == true
     }
 
     private fun findGlobalIpv6OnInterface(interfaceName: String): InetSocketAddress? {

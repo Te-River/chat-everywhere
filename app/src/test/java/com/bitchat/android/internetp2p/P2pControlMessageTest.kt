@@ -12,6 +12,7 @@ class P2pControlMessageTest {
         mappedHost = "203.0.113.10",
         mappedPort = 5000,
         ipv6Host = "2001:db8::1",
+        lanHost = "192.168.1.50",
         tcpPort = 40001,
         natType = NatTypeDetector.NatType.FULL_CONE,
         hasIpv4Mapped = true
