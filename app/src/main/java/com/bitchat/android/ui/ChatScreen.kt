@@ -827,13 +827,16 @@ private fun ChatFloatingHeader(
                             com.bitchat.android.R.string.search_result_ble_off
                         }
                     )
-                    val p2pText = if (result.p2pTriggered) {
-                        context.getString(
-                            com.bitchat.android.R.string.search_result_p2p_on,
-                            result.p2pOffers
-                        )
-                    } else {
-                        context.getString(com.bitchat.android.R.string.search_result_p2p_off)
+                    val p2pText = when {
+                        !result.p2pEnabled ->
+                            context.getString(com.bitchat.android.R.string.search_result_p2p_off)
+                        !result.p2pTriggered ->
+                            context.getString(com.bitchat.android.R.string.search_result_p2p_no_peers)
+                        else ->
+                            context.getString(
+                                com.bitchat.android.R.string.search_result_p2p_on,
+                                result.p2pOffers
+                            )
                     }
                     android.widget.Toast.makeText(
                         context,

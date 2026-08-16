@@ -84,6 +84,7 @@
   <string name="search_result_ble_on">Searching… BLE scan started</string>
   <string name="search_result_ble_off">Searching… BLE skipped (disabled)</string>
   <string name="search_result_p2p_on">P2P probing %1$d peer(s)</string>
+  <string name="search_result_p2p_no_peers">P2P on, but no online favorites to probe</string>
   <string name="search_result_p2p_off">P2P skipped (disabled)</string>
   <string name="cd_unread_private_messages">Messages</string>
   <string name="conversations">Conversations</string>

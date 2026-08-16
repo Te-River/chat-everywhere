@@ -122,6 +122,7 @@
   <string name="search_result_ble_on">搜索中… 蓝牙扫描已启动</string>
   <string name="search_result_ble_off">搜索中… 蓝牙未开启，已跳过</string>
   <string name="search_result_p2p_on">P2P 探测 %1$d 位好友</string>
+  <string name="search_result_p2p_no_peers">P2P 已开启，但暂无可探测的好友</string>
   <string name="search_result_p2p_off">P2P 未开启，已跳过</string>
   <string name="cd_unread_private_messages">未读私信</string>
   <string name="cd_location_notes">位置笔记</string>

@@ -86,6 +86,11 @@ object MeshServiceHolder {
     var internetMeshTransport: InternetMeshTransport? = null
         private set
 
+    /** App context captured when the holder first creates a transport, used to
+     *  lazily bring up the INTERNET transport on user search. */
+    @Volatile
+    private var appContext: Context? = null
+
     private val internetScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     @Synchronized
@@ -146,6 +151,7 @@ object MeshServiceHolder {
      */
     @Synchronized
     fun getInternetTransportOrCreate(context: Context): InternetMeshTransport {
+        appContext = context.applicationContext
         val existing = internetMeshTransport
         if (existing != null) return existing
         val created = InternetMeshTransport(
@@ -181,6 +187,7 @@ object MeshServiceHolder {
      */
     data class SearchResult(
         val bleTriggered: Boolean,
+        val p2pEnabled: Boolean,
         val p2pOffers: Int
     ) {
         val p2pTriggered: Boolean get() = p2pOffers > 0
@@ -190,8 +197,10 @@ object MeshServiceHolder {
      * User-facing search entry point: triggers BLE discovery and the internet
      * P2P probe together. Each transport is guarded by its own enable switch:
      * - BLE scanning runs only when the BLE transport is enabled.
-     * - P2P probing runs only when the internet P2P feature is enabled and
-     *   the transport is attached.
+     * - P2P probing runs only when the internet P2P feature is enabled.
+     * When P2P is enabled but the transport has not been created yet (e.g. the
+     * foreground service has not started), it is brought up lazily so a search
+     * never reports "P2P off" merely because of missing wiring.
      * Safe to call from the UI on any thread; all heavy work is dispatched
      * onto the transport scopes.
      */
@@ -203,16 +212,30 @@ object MeshServiceHolder {
         } catch (e: Exception) {
             android.util.Log.e(TAG, "BLE search failed: ${e.message}")
         }
-        // Internet P2P probe (guarded inside InternetP2pSignaling.searchAll).
+        // Internet P2P probe (guarded by the P2P feature switch).
+        var p2pEnabled = false
         var p2pOffers = 0
         try {
-            if (internetMeshTransport != null) {
-                p2pOffers = com.bitchat.android.internetp2p.InternetP2pSignaling.searchAll()
+            com.bitchat.android.internetp2p.P2pPreferenceManager.init(appContext ?: return SearchResult(bleTriggered, false, 0))
+            if (com.bitchat.android.internetp2p.P2pPreferenceManager.isEnabled()) {
+                // Lazily create the transport if the feature is on but the
+                // foreground service has not wired it up yet.
+                if (internetMeshTransport == null) {
+                    appContext?.let { getInternetTransportOrCreate(it) }?.start()
+                }
+                if (internetMeshTransport != null) {
+                    p2pEnabled = true
+                    p2pOffers = com.bitchat.android.internetp2p.InternetP2pSignaling.searchAll()
+                }
             }
         } catch (e: Exception) {
             android.util.Log.e(TAG, "P2P search failed: ${e.message}")
         }
-        return SearchResult(bleTriggered = bleTriggered, p2pOffers = p2pOffers)
+        return SearchResult(
+            bleTriggered = bleTriggered,
+            p2pEnabled = p2pEnabled,
+            p2pOffers = p2pOffers
+        )
     }
 
     @Synchronized
