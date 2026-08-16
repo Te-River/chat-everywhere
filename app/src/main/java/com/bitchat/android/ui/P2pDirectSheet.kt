@@ -177,15 +177,24 @@ fun P2pDirectSheet(
                 )
                 1 -> ScanTab(
                     onScan = { text ->
-                        val ok = InternetP2pSignaling.importLinkUri(text)
-                        Toast.makeText(
-                            context,
-                            context.getString(
-                                if (ok) R.string.p2p_link_imported else R.string.p2p_link_unrecognized
-                            ),
-                            Toast.LENGTH_SHORT
-                        ).show()
-                        if (ok) onDismiss()
+                        val peerID = InternetP2pSignaling.importLinkUri(text)
+                        if (peerID != null) {
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.p2p_link_imported),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            scope.launch {
+                                viewModel.startPrivateChat(peerID)
+                                onDismiss()
+                            }
+                        } else {
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.p2p_link_unrecognized),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
                     }
                 )
                 2 -> ImportTab(
@@ -193,17 +202,24 @@ fun P2pDirectSheet(
                     importText = importText,
                     onImportTextChange = { importText = it },
                     onImport = {
-                        val ok = InternetP2pSignaling.importLinkUri(importText.trim())
-                        Toast.makeText(
-                            context,
-                            context.getString(
-                                if (ok) R.string.p2p_link_imported else R.string.p2p_link_unrecognized
-                            ),
-                            Toast.LENGTH_SHORT
-                        ).show()
-                        if (ok) {
+                        val peerID = InternetP2pSignaling.importLinkUri(importText.trim())
+                        if (peerID != null) {
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.p2p_link_imported),
+                                Toast.LENGTH_SHORT
+                            ).show()
                             importText = ""
-                            onDismiss()
+                            scope.launch {
+                                viewModel.startPrivateChat(peerID)
+                                onDismiss()
+                            }
+                        } else {
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.p2p_link_unrecognized),
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
                     },
                     onGeohashSweep = {

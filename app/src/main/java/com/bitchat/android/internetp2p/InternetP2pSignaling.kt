@@ -165,21 +165,23 @@ object InternetP2pSignaling {
      * link) and attempts a direct connection. The embedded sender npub lets us
      * derive the stranger identity key without a favorite relationship.
      *
-     * @return True when the link was parsed and a connection attempt started.
+     * @return The resolved P2P identity key (noiseKeyHex for favorites, or the
+     *   `nostr_<pub16>` stranger alias) when the link was parsed and a
+     *   connection attempt started, or null when it could not be imported.
      */
-    fun importLinkUri(uri: String): Boolean {
-        val t = transport ?: return false
+    fun importLinkUri(uri: String): String? {
+        val t = transport ?: return null
         val payload = P2pUriCodec.decode(uri) ?: run {
             Log.w(TAG, "Ignoring unrecognized peer link")
-            return false
+            return null
         }
         val peerID = resolvePeerID(payload.npub) ?: run {
             Log.w(TAG, "Cannot derive identity for link sender; ignoring")
-            return false
+            return null
         }
         t.connectToPeer(peerID, payload.candidate)
         Log.i(TAG, "Imported peer link, connecting to ${peerID.take(12)}…")
-        return true
+        return peerID
     }
 
     /**

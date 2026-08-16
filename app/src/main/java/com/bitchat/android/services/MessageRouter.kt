@@ -124,7 +124,7 @@ class MessageRouter private constructor(
         // Noise key hex exists even when the peer is NOT on the local mesh
         // (the exact case P2P exists for), unlike meshPeerID which requires a
         // live mesh connection.
-        val p2pKey = resolution.noiseKeyHex ?: meshTarget
+        val p2pKey = p2pKeyFor(resolution, conversationID)
         val nostrTarget = p2pKey ?: toPeerID
 
         if (com.bitchat.android.nostr.GeohashAliasRegistry.contains(toPeerID)) {
@@ -177,7 +177,7 @@ class MessageRouter private constructor(
     fun sendReadReceipt(receipt: ReadReceipt, toPeerID: String) {
         val resolution = ContactDirectory.resolve(toPeerID)
         val meshTarget = resolution.meshPeerID ?: toPeerID.takeIf { ContactIdentityResolver.isMeshPeerId(it) }
-        val p2pKey = resolution.noiseKeyHex ?: meshTarget
+        val p2pKey = p2pKeyFor(resolution, toPeerID)
         val nostrTarget = p2pKey ?: toPeerID
         if (meshTarget != null && (isReady(mesh, meshTarget) || isInternetDirect(p2pKey))) {
             Log.d(TAG, "Routing READ via mesh to ${meshTarget.take(8)}… id=${receipt.originalMessageID.take(8)}…")
@@ -200,7 +200,7 @@ class MessageRouter private constructor(
         }
         val resolution = ContactDirectory.resolve(toPeerID)
         val meshTarget = resolution.meshPeerID ?: toPeerID.takeIf { ContactIdentityResolver.isMeshPeerId(it) }
-        val p2pKey = resolution.noiseKeyHex ?: meshTarget
+        val p2pKey = p2pKeyFor(resolution, toPeerID)
         val meshPathUp = meshTarget != null &&
             (mesh.getPeerInfo(meshTarget)?.isConnected == true || isInternetDirect(p2pKey)) &&
             mesh.hasEstablishedSession(meshTarget)
@@ -212,7 +212,7 @@ class MessageRouter private constructor(
     fun sendFavoriteNotification(toPeerID: String, isFavorite: Boolean) {
         val resolution = ContactDirectory.resolve(toPeerID)
         val meshTarget = resolution.meshPeerID ?: toPeerID.takeIf { ContactIdentityResolver.isMeshPeerId(it) }
-        val p2pKey = resolution.noiseKeyHex ?: meshTarget
+        val p2pKey = p2pKeyFor(resolution, toPeerID)
         if (meshTarget != null &&
             (mesh.getPeerInfo(meshTarget)?.isConnected == true || isInternetDirect(p2pKey)) &&
             mesh.hasEstablishedSession(meshTarget)
@@ -240,7 +240,7 @@ class MessageRouter private constructor(
             val entry = iterator.next()
             val resolution = ContactDirectory.resolve(conversationID)
             val meshTarget = resolution.meshPeerID
-            val p2pKey = resolution.noiseKeyHex ?: meshTarget
+            val p2pKey = p2pKeyFor(resolution, conversationID)
             val nostrTarget = p2pKey ?: conversationID
             if (meshTarget != null && (isReady(mesh, meshTarget) || isInternetDirect(p2pKey))) {
                 mesh.sendPrivateMessage(entry.content, meshTarget, entry.nickname, entry.messageID)
@@ -340,7 +340,7 @@ class MessageRouter private constructor(
 
             val resolution = ContactDirectory.resolve(conversationID)
             val meshTarget = resolution.meshPeerID
-            val p2pKey = resolution.noiseKeyHex ?: meshTarget
+            val p2pKey = p2pKeyFor(resolution, conversationID)
 
             if (meshTarget != null && (isReady(mesh, meshTarget) || isInternetDirect(p2pKey))) {
                 flushOutboxFor(conversationID)
@@ -413,7 +413,9 @@ class MessageRouter private constructor(
      * True when an internet P2P direct link to [peerID] is currently up. The
      * cross-transport bridge then forwards mesh sends to the INTERNET
      * transport automatically, so the mesh path is usable even without a
-     * radio link. [peerID] may be a mesh peer ID or the stable noiseKeyHex.
+     * radio link. [peerID] may be a mesh peer ID, the stable noiseKeyHex, or
+     * a `nostr_<pub16>` stranger alias (links imported via QR / link are
+     * keyed by the latter).
      */
     private fun isInternetDirect(peerID: String?): Boolean {
         if (peerID == null) return false
@@ -423,6 +425,18 @@ class MessageRouter private constructor(
         } catch (_: Exception) {
             false
         }
+    }
+
+    /**
+     * Resolves the P2P identity key for routing: the favorite's noiseKeyHex,
+     * falling back to the live mesh peer ID, and finally to a `nostr_` alias
+     * so stranger conversations imported via QR / link can hit the INTERNET
+     * direct link (whose links map is keyed by the nostr_ alias).
+     */
+    private fun p2pKeyFor(resolution: ContactDirectory.ContactResolution, fallback: String?): String? {
+        return resolution.noiseKeyHex
+            ?: resolution.meshPeerID
+            ?: fallback?.takeIf { ContactIdentityResolver.isNostrAlias(it) }
     }
 
     // Called when mesh peer list changes; attempt to flush any matching outbox entries
