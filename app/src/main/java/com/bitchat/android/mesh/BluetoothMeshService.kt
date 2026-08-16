@@ -224,6 +224,18 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
             try { com.bitchat.android.ui.debug.DebugPreferenceManager.getBleEnabled(true) } catch (_: Exception) { true }
         }
     }
+
+    /**
+     * User-facing search: forces a fresh BLE discovery pass. No-op when the
+     * BLE transport (or the GATT client role) is disabled.
+     */
+    fun restartScanning() {
+        if (!isBleTransportEnabled()) {
+            Log.i(TAG, "BLE search skipped: BLE transport disabled")
+            return
+        }
+        connectionManager.restartScanning()
+    }
     
     /**
      * Start periodic debug logging every 10 seconds

@@ -80,6 +80,7 @@
 
   <!-- Chat header &amp; accessibility -->
   <string name="cd_nostr_reachable">Nostr reachable</string>
+  <string name="cd_search_peers">搜索附近与在线好友</string>
   <string name="cd_unread_private_messages">Messages</string>
   <string name="conversations">Conversations</string>
   <string name="offline_not_in_mesh">Offline · not in mesh</string>

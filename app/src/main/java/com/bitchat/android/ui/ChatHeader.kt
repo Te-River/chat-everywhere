@@ -652,7 +652,8 @@ fun ChatHeaderContent(
     onTripleClick: () -> Unit,
     onShowAppInfo: () -> Unit,
     onLocationChannelsClick: () -> Unit,
-    onLocationNotesClick: () -> Unit
+    onLocationNotesClick: () -> Unit,
+    onSearchClick: () -> Unit
 ) {
     val colorScheme = MaterialTheme.colorScheme
 
@@ -676,6 +677,7 @@ fun ChatHeaderContent(
                 onSidebarClick = onSidebarClick,
                 onLocationChannelsClick = onLocationChannelsClick,
                 onLocationNotesClick = onLocationNotesClick,
+                onSearchClick = onSearchClick,
                 viewModel = viewModel
             )
         }
@@ -716,6 +718,7 @@ private fun MainHeader(
     onSidebarClick: () -> Unit,
     onLocationChannelsClick: () -> Unit,
     onLocationNotesClick: () -> Unit,
+    onSearchClick: () -> Unit,
     viewModel: ChatViewModel
 ) {
     val colorScheme = MaterialTheme.colorScheme
@@ -771,12 +774,27 @@ private fun MainHeader(
                 )
             }
 
-            // Order, left to right: unread DMs, notes, channel, people. This cluster is measured
-            // before the weighted nickname, so actions cannot be pushed off-screen by identity.
+            // Order, left to right: search, unread DMs, notes, channel, people. This cluster is
+            // measured before the weighted nickname, so actions cannot be pushed off-screen by
+            // identity.
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
+                // One-tap search: BLE discovery + internet P2P probe, each guarded by its
+                // own enable switch inside MeshServiceHolder.searchNow().
+                HeaderIconButton(
+                    onClick = onSearchClick,
+                    contentDescription = stringResource(R.string.cd_search_peers)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = stringResource(R.string.cd_search_peers),
+                        modifier = Modifier.size(HeaderIconSize),
+                        tint = colorScheme.primary
+                    )
+                }
+
                 if (hasUnreadPrivateMessages.isNotEmpty()) {
                     HeaderIconButton(
                         onClick = { viewModel.openLatestUnreadPrivateChat() },

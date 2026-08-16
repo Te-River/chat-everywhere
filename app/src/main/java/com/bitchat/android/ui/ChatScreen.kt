@@ -806,6 +806,11 @@ private fun ChatFloatingHeader(
                 // Ensure location is loaded before showing sheet
                 locationManager.refreshChannels()
                 onLocationNotesClick()
+            },
+            // One-tap search: BLE discovery + internet P2P probe, each guarded
+            // by its own enable switch inside MeshServiceHolder.searchNow().
+            onSearchClick = {
+                com.bitchat.android.service.MeshServiceHolder.searchNow()
             }
         )
     }

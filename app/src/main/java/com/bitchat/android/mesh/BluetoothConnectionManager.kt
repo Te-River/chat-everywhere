@@ -408,6 +408,17 @@ class BluetoothConnectionManager(
     }
     fun stopClient() { connectionScope.launch { clientManager.stop() } }
 
+    /**
+     * Force a fresh discovery pass. Used by the user-facing search button;
+     * no-op when the BLE transport (or the GATT client role) is disabled.
+     */
+    fun restartScanning() {
+        if (!isActive || !isBleTransportEnabled()) return
+        connectionScope.launch {
+            if (isGattClientEnabled()) clientManager.restartScanning()
+        }
+    }
+
     // Inject nickname resolver for broadcaster logs
     fun setNicknameResolver(resolver: (String) -> String?) { packetBroadcaster.setNicknameResolver(resolver) }
 

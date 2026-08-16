@@ -174,6 +174,32 @@ object MeshServiceHolder {
         return created
     }
 
+    /**
+     * User-facing search entry point: triggers BLE discovery and the internet
+     * P2P probe together. Each transport is guarded by its own enable switch:
+     * - BLE scanning runs only when the BLE transport is enabled.
+     * - P2P probing runs only when the internet P2P feature is enabled and
+     *   the transport is attached.
+     * Safe to call from the UI on any thread; all heavy work is dispatched
+     * onto the transport scopes.
+     */
+    fun searchNow() {
+        // BLE discovery (guarded inside BluetoothMeshService.restartScanning).
+        try {
+            meshService?.restartScanning()
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "BLE search failed: ${e.message}")
+        }
+        // Internet P2P probe (guarded inside InternetP2pSignaling.searchAll).
+        try {
+            if (internetMeshTransport != null) {
+                com.bitchat.android.internetp2p.InternetP2pSignaling.searchAll()
+            }
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "P2P search failed: ${e.message}")
+        }
+    }
+
     @Synchronized
     fun attach(service: BluetoothMeshService) {
         android.util.Log.d(TAG, "Attaching BluetoothMeshService to holder")

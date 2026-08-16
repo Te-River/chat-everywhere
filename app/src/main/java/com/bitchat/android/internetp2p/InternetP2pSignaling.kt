@@ -110,6 +110,45 @@ object InternetP2pSignaling {
         }
     }
 
+    /**
+     * User-facing search: probes every mutual favorite that has a Nostr
+     * mapping with an OFFER so peers currently online can be discovered and
+     * upgraded to direct links. Peers with no Nostr pubkey, or peers we are
+     * already directly connected to, are skipped. No-op when the P2P
+     * transport is not attached (feature disabled).
+     */
+    fun searchAll() {
+        val t = transport ?: run {
+            Log.w(TAG, "P2P search skipped: internet P2P transport not attached")
+            return
+        }
+        val favorites = try {
+            FavoritesPersistenceService.shared.getAllRelationships()
+        } catch (e: Exception) {
+            Log.w(TAG, "P2P search skipped: cannot read favorites")
+            return
+        }
+        var offered = 0
+        for (relationship in favorites) {
+            if (!relationship.isMutual) continue
+            val npub = relationship.peerNostrPublicKey ?: continue
+            if (npub.isBlank()) continue
+            val noiseKey = try {
+                ContactIdentityResolver.noiseKeyHex(relationship.peerNoisePublicKey)
+            } catch (e: Exception) {
+                null
+            } ?: continue
+            if (t.isPeerConnected(noiseKey)) continue
+            try {
+                sendOffer(noiseKey)
+                offered++
+            } catch (e: Exception) {
+                Log.w(TAG, "P2P search OFFER failed for ${noiseKey.take(12)}…: ${e.message}")
+            }
+        }
+        Log.i(TAG, "P2P search complete: OFFERs sent to $offered mutual favorite(s)")
+    }
+
     // ------------------------------------------------------------------
 
     private fun sendControl(recipientNostr: String, content: String) {
