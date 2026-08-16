@@ -33,6 +33,11 @@ and portable across implementations.
 - Asynchronous tests must have a deterministic completion condition and a
   bounded timeout.
 - A fixed bug must retain its smallest reproducing input as a regression test.
+- Network / P2P behavior must be exercised across the component switch
+  combinations: Wi-Fi, Bluetooth, and mobile data each tested on and off
+  (e.g. mobile-data-only with Bluetooth off, Wi-Fi-only, all on, all off).
+  Testing a single network state is not sufficient; the transport-selection
+  logic must be verified for every combination it can observe.
 
 ## Naming
 

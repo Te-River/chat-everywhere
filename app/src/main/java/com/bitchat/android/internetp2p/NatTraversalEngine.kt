@@ -90,11 +90,20 @@ class NatTraversalEngine(
         val natProbe = detector.detect()
 
         val ipv6 = findGlobalIpv6()
+        // Bind the TCP listener on the wildcard so it accepts BOTH IPv4 and
+        // IPv6 connections. Binding 0.0.0.0 (IPv4-only) silently kills the
+        // IPv6 direct tier, which on cellular data (CGNAT, symmetric NAT) is
+        // often the ONLY viable path. Prefer dual-stack "::" (accepts IPv4 via
+        // v4-mapped) and fall back to 0.0.0.0 only if the platform forbids it.
         val listener = ServerSocket()
         try {
             listener.reuseAddress = true
-            val wildcard = InetAddress.getByName("0.0.0.0")
-            listener.bind(InetSocketAddress(wildcard, 0))
+            try {
+                listener.bind(InetSocketAddress(InetAddress.getByName("::"), 0))
+            } catch (e: Exception) {
+                Log.w(TAG, "Dual-stack bind failed; falling back to IPv4: ${e.message}")
+                listener.bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), 0))
+            }
         } catch (e: Exception) {
             Log.e(TAG, "TCP listener bind failed: ${e.message}")
         }
