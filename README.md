@@ -32,9 +32,10 @@ This project is released into the public domain. See the [LICENSE](LICENSE.md) f
 ## Features
 
 - **Dual Transport Architecture**: Bluetooth LE mesh for offline messaging, Nostr relays for internet-based messaging
+- **Internet P2P Direct Links**: Serverless direct connections over the internet between strangers — via QR code, share link, or geohash-channel probing (no accounts required)
 - **Location-Based Channels**: Geographic chat rooms using geohash coordinates over Nostr relays
 - **Intelligent Message Routing**: Automatically chooses the best transport, with queuing and retry when a peer is unreachable
-- **End-to-End Encryption**: [Noise Protocol](https://noiseprotocol.org) (XX pattern, X25519 + ChaCha20-Poly1305) for private messages over the mesh
+- **End-to-End Encryption**: [Noise Protocol](https://noiseprotocol.org) (XX pattern, X25519 + ChaCha20-Poly1305) for private messages over the mesh and direct links
 - **Decentralized Mesh Network**: Automatic peer discovery and multi-hop relay over Bluetooth LE (max 7 hops)
 - **Wi-Fi Aware Transport**: Higher-bandwidth local mesh on supported devices
 - **Channel Chats**: Topic-based group messaging with optional password protection (Argon2id + AES-256-GCM)
@@ -59,15 +60,57 @@ This project is released into the public domain. See the [LICENSE](LICENSE.md) f
 - Private messages fall back to Nostr for mutual favorites when the mesh is unavailable
 - Ephemeral keys per geohash area
 
+### Internet P2P Direct Links (China-friendly)
+
+A serverless direct-link channel (`internetp2p`) that connects two devices over the
+internet with **no TURN, no relay, no signaling server**. Signaling reuses the
+existing end-to-end encrypted Nostr DM stream; STUN is only an optional reflector.
+
+- **Three no-favorite entry points**: QR code, share/copy link (`bitchat-p2p://`),
+  and geohash-channel probing — any of them opens a direct chat with a stranger.
+- **NAT detection first**: RFC 5780 probing classifies the local NAT (cone /
+  symmetric / open) plus a port-allocation probe (`PortBehaviorProbe`) that tells
+  predictable (sequential) from random symmetric NATs, then picks the right
+  traversal strategy.
+- **Multi-tier fallback (direct first)**:
+  1. Tier 0 — LAN direct (same Wi-Fi, no traversal needed)
+  2. Tier 1 — global IPv6 direct; if inbound TCP is blocked (common on cellular),
+     Tier 1b retries with an IPv6 UDP punch
+  3. Tier 2 — classic UDP hole punch; for predictable (sequential) symmetric NATs
+     a port-prediction sweep (RFC 5128 N+1) widens the window
+  4. Tier 3 — TCP Simultaneous Open; for random symmetric NATs (typical China
+     Mobile CGNAT) a multi-port Birthday Attack (bind+connect the same shared
+     port range, 4–8 ports with jitter)
+  5. Nostr relays as the final fallback — no direct path is ever required
+- **UDP → TCP upgrade**: carriers (China Mobile/Unicom) QoS-throttle UDP hard
+  while leaving TCP mostly untouched, so after a successful UDP punch the link
+  briefly re-establishes over TCP (fresh `[BP2P][nonce]` handshake re-authenticates);
+  on failure the UDP link stays in use.
+- **Security, fail-closed**: every link — UDP, TCP, or IPv6 — must complete a
+  `[BP2P][nonce]` handshake (nonce delivered out-of-band over encrypted Nostr DM);
+  handshake failures are closed immediately (DoS-safe). Identity stays
+  unverified until the Noise session binds it, which the UI marks explicitly.
+
 ### Android Stack
 
 - Kotlin, Jetpack Compose (Material 3), MVVM
 - Coroutines and Flow for all networking and state
-- Core components: `MeshForegroundService` (persistent connectivity), `BluetoothMeshService` / `WifiAwareMeshService` (transports), `UnifiedMeshService` (transport selection), `NoiseSessionManager` (encryption sessions), `MessageRouter` (mesh/Nostr routing with outbox retry)
+- Core components: `MeshForegroundService` (persistent connectivity), `BluetoothMeshService` / `WifiAwareMeshService` (transports), `UnifiedMeshService` (transport selection), `NoiseSessionManager` (encryption sessions), `MessageRouter` (mesh/P2P/Nostr routing with outbox retry), `InternetMeshTransport` + `NatTraversalEngine` (internet P2P direct links)
 
 ## Building
 
 Requires Android Studio and the Android SDK (API 26+).
+
+### One-shot build script (Windows)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+Builds `:app:assembleDebug`, copies the APKs into `release/` (lowercase), and
+removes any stale uppercase `Release/` directory.
+
+### Manual build
 
 ```bash
 git clone https://github.com/permissionlesstech/bitchat-android.git
