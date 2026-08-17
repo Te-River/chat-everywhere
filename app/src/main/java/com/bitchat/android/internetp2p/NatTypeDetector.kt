@@ -65,7 +65,14 @@ class NatTypeDetector(
         val natType: NatType,
         val mappedAddress: InetSocketAddress?,
         val localAddress: InetSocketAddress?,
-        val servers: List<InetSocketAddress>
+        val servers: List<InetSocketAddress>,
+        /**
+         * External-port allocation behavior (STABLE / SEQUENTIAL / RANDOM /
+         * UNKNOWN), probed separately via [PortBehaviorProbe]. SEQUENTIAL
+         * enables symmetric-NAT port prediction; RANDOM falls back to
+         * multi-port TCP Simultaneous Open.
+         */
+        val portAllocation: PortBehaviorProbe.PortAllocation = PortBehaviorProbe.PortAllocation.UNKNOWN
     ) {
         /** True when a classic UDP hole punch has a real chance. */
         val udpPunchViable: Boolean

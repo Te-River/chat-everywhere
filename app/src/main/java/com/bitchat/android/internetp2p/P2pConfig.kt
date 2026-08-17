@@ -38,6 +38,14 @@ object P2pConfig {
     /** Total budget for one UDP punch attempt. */
     const val PUNCH_TOTAL_TIMEOUT_MS: Long = 8_000L
 
+    /**
+     * Port-prediction window: for SEQUENTIAL (incremental symmetric) NATs the
+     * peer's NEXT mapping often lands within a few hops of the advertised one,
+     * so the UDP punch also sweeps +/- this many ports around it (RFC 5128
+     * N+1 style, seen in saorsa / stun_max implementations).
+     */
+    const val PORT_PREDICTION_WINDOW: Int = 8
+
     /** Connect timeout for direct / simultaneous-open TCP attempts. */
     const val TCP_CONNECT_TIMEOUT_MS: Long = 5_000L
 
@@ -46,6 +54,32 @@ object P2pConfig {
 
     /** How long to keep the accept path open after a failed connect. */
     const val ACCEPT_WAIT_MS: Long = 8_000L
+
+    // ------------------------------------------------------------------
+    // TCP Simultaneous Open (TSO) with Birthday Attack
+    // ------------------------------------------------------------------
+    //
+    // Symmetric NATs (esp. China Mobile CGNAT / campus NAT4) allocate a fresh
+    // external port per destination, so the mapped port is unpredictable and a
+    // single-port simultaneous-open almost never hits. The fix (see lain,
+    // EasyTier, stun_max): both sides BIND + CONNECT from the SAME port range
+    // concurrently - each outbound SYN opens a NAT mapping for the peer's
+    // incoming SYN, and matching (port, port) pairs cross in transit.
+
+    /** Base of the shared local port range used for the Birthday Attack. */
+    const val TSO_PORT_BASE: Int = 50_000
+
+    /** Ports tried when the NAT keeps ports stable / predictable. */
+    const val TSO_PORT_COUNT: Int = 4
+
+    /** Ports tried for RANDOM symmetric NATs (wider birthday sweep). */
+    const val TSO_PORT_COUNT_RANDOM: Int = 8
+
+    /** Stagger between port attempts to dodge CGNAT rate limiting. */
+    const val TSO_JITTER_MS: Long = 50L
+
+    /** Total budget for one TSO Birthday Attack round. */
+    const val TSO_TOTAL_TIMEOUT_MS: Long = 8_000L
 
     /** Inactivity window after which a P2P link is considered dead. */
     const val LINK_IDLE_TIMEOUT_MS: Long = 120_000L

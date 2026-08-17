@@ -37,7 +37,9 @@ data class PunchCandidate(
     val hasIpv4Mapped: Boolean = false,
     val punchStartDelayMs: Long = 0L,
     val punchIntervalMs: Long = P2pConfig.PUNCH_PROBE_INTERVAL_MS,
-    val punchWindowMs: Long = P2pConfig.PUNCH_TOTAL_TIMEOUT_MS
+    val punchWindowMs: Long = P2pConfig.PUNCH_TOTAL_TIMEOUT_MS,
+    /** Local port of the IPv6-capable UDP socket, used for IPv6 punching. */
+    val ipv6UdpPort: Int = 0
 ) {
     /** STUN-reflected public endpoint used for the UDP hole punch. */
     val mappedAddress: InetSocketAddress?
@@ -80,7 +82,8 @@ data class PunchCandidate(
                 lanHost = profile.lanHost,
                 tcpPort = profile.tcpPort,
                 natType = profile.natType,
-                hasIpv4Mapped = mapped != null
+                hasIpv4Mapped = mapped != null,
+                ipv6UdpPort = profile.ipv6UdpPort
             )
         }
     }

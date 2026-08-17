@@ -65,11 +65,15 @@ class NatTraversalEngine(
         val ipv6Global: InetSocketAddress?,
         val natType: NatTypeDetector.NatType,
         val tcpPort: Int,
-        val lanHost: String? = null
+        val lanHost: String? = null,
+        val portAllocation: PortBehaviorProbe.PortAllocation = PortBehaviorProbe.PortAllocation.UNKNOWN,
+        /** Local port of the IPv6-capable UDP socket used for IPv6 punching. */
+        val ipv6UdpPort: Int = 0
     )
 
     @Volatile private var profile: LocalProfile? = null
     @Volatile private var udpSocket: DatagramSocket? = null
+    @Volatile private var ipv6UdpSocket: DatagramSocket? = null
     @Volatile private var tcpListener: ServerSocket? = null
 
     private val punchMutex = Mutex()
@@ -91,7 +95,28 @@ class NatTraversalEngine(
         val detector = NatTypeDetector.forSocket(stun, localEndpoint, stunServers)
         val natProbe = detector.detect()
 
+        // Port-allocation behavior: classifies SYMMETRIC into predictable
+        // (SEQUENTIAL -> port prediction) vs random (-> multi-port TSO).
+        val portAllocation = natProbe.mappedAddress?.let {
+            PortBehaviorProbe.forSocket(stun, stunServers.first()).classify()
+        } ?: PortBehaviorProbe.PortAllocation.UNKNOWN
+
         val ipv6 = findGlobalIpv6()
+
+        // IPv6-capable UDP socket used for the IPv6 UDP punch fallback (when
+        // the IPv6 TCP direct tier fails because the carrier blocks inbound
+        // TCP but still allows outbound UDP to open a firewall pinhole).
+        var ipv6UdpPort = 0
+        if (ipv6 != null) {
+            try {
+                val v6Socket = DatagramSocket(InetSocketAddress(InetAddress.getByName("::"), 0))
+                ipv6UdpPort = v6Socket.localPort
+                ipv6UdpSocket = v6Socket
+            } catch (_: Exception) {
+                ipv6UdpPort = 0
+            }
+        }
+
         // Bind the TCP listener on the wildcard so it accepts BOTH IPv4 and
         // IPv6 connections. Binding 0.0.0.0 (IPv4-only) silently kills the
         // IPv6 direct tier, which on cellular data (CGNAT, symmetric NAT) is
@@ -116,7 +141,9 @@ class NatTraversalEngine(
             ipv6Global = ipv6,
             natType = natProbe.natType,
             tcpPort = try { listener.localPort } catch (_: Exception) { 0 },
-            lanHost = findLanIpv4()
+            lanHost = findLanIpv4(),
+            portAllocation = portAllocation,
+            ipv6UdpPort = ipv6UdpPort
         )
         profile = p
         tcpListener = listener
@@ -174,6 +201,15 @@ class NatTraversalEngine(
             )
             if (link != null) return link
             P2pEventLog.log("Tier 1 失败：IPv6 直连未建立")
+            // Fallback: carriers often block INBOUND TCP on IPv6 while still
+            // letting outbound UDP open a pinhole - try the IPv6 UDP punch.
+            if (peer.ipv6UdpPort > 0) {
+                Log.i(TAG, "Tier 1b: IPv6 UDP punch to ${peerIpv6.address.hostAddress}:${peer.ipv6UdpPort}")
+                P2pEventLog.log("Tier 1b：尝试 IPv6 UDP 打洞 → ${peerIpv6.address.hostAddress}:${peer.ipv6UdpPort}")
+                val v6Link = tryIpv6UdpPunch(peer, onFrame)
+                if (v6Link != null) return v6Link
+                P2pEventLog.log("Tier 1b 失败：IPv6 UDP 打洞未成功")
+            }
         } else {
             P2pEventLog.log(
                 "Tier 1 跳过：IPv6 直连不可用（本机=${local.ipv6Global?.address?.hostAddress ?: "无"} " +
@@ -182,7 +218,13 @@ class NatTraversalEngine(
         }
 
         // Tier 2: UDP hole punch.
-        if (local.natType.udpPunchViable && peerMapped != null) {
+        // Classic punch needs an endpoint-independent mapping (udpPunchViable);
+        // a SEQUENTIAL (incremental symmetric) NAT is NOT classically viable,
+        // but port prediction can still land the peer's next mapping - so
+        // include it here and let tryUdpPunch sweep the predicted window.
+        val udpViable = local.natType.udpPunchViable ||
+            local.portAllocation == PortBehaviorProbe.PortAllocation.SEQUENTIAL
+        if (udpViable && peerMapped != null) {
             Log.i(TAG, "Tier 2: UDP punch to $peerMapped")
             P2pEventLog.log("Tier 2：尝试 UDP 打洞 → $peerMapped")
             val link = tryUdpPunch(socket, peer, onFrame)
@@ -191,22 +233,35 @@ class NatTraversalEngine(
         } else {
             P2pEventLog.log(
                 "Tier 2 跳过：UDP 打洞不可行（NAT=${local.natType} " +
-                    "对方公网端点=${peerMapped ?: "无"}）"
+                    "端口分配=${local.portAllocation} 对方公网端点=${peerMapped ?: "无"}）"
             )
         }
 
         // Tier 3: TCP simultaneous-open against the peer's mapped endpoint.
+        // For RANDOM symmetric NATs (China Mobile CGNAT / campus NAT4) the
+        // mapped port is unpredictable, so use the multi-port Birthday Attack
+        // (bind+connect the same shared range); otherwise the single-port
+        // connect+accept race is enough.
         if (peerMapped != null) {
-            Log.i(TAG, "Tier 3: TCP simultaneous-open to $peerMapped")
-            P2pEventLog.log("Tier 3：尝试 TCP 同时打开 → $peerMapped")
-            val link = tryTcpConnect(
-                target = peerMapped,
-                peerNonce = peer.nonce,
-                onFrame = onFrame,
-                accept = true
-            )
-            if (link != null) return link
-            P2pEventLog.log("Tier 3 失败：TCP 同时打开未成功")
+            val tsoIp = peerMapped.address
+            if (local.portAllocation == PortBehaviorProbe.PortAllocation.RANDOM) {
+                Log.i(TAG, "Tier 3: TSO Birthday Attack to ${tsoIp.hostAddress}")
+                P2pEventLog.log("Tier 3：尝试 TCP 同时打开（多端口生日攻击）→ ${tsoIp.hostAddress}")
+                val link = tryTsoPunch(tsoIp, peer.nonce, onFrame)
+                if (link != null) return link
+                P2pEventLog.log("Tier 3 失败：TSO 多端口攻击未成功")
+            } else {
+                Log.i(TAG, "Tier 3: TCP simultaneous-open to $peerMapped")
+                P2pEventLog.log("Tier 3：尝试 TCP 同时打开 → $peerMapped")
+                val link = tryTcpConnect(
+                    target = peerMapped,
+                    peerNonce = peer.nonce,
+                    onFrame = onFrame,
+                    accept = true
+                )
+                if (link != null) return link
+                P2pEventLog.log("Tier 3 失败：TCP 同时打开未成功")
+            }
         } else {
             P2pEventLog.log("Tier 3 跳过：对方无公网端点（无法打洞）")
         }
@@ -341,19 +396,38 @@ class NatTraversalEngine(
         onFrame: (ByteArray) -> Unit
     ): UdpLink? {
         val local = profile ?: return null
-        val target = peer.mappedAddress ?: return null
+        val base = peer.mappedAddress ?: return null
         val handshake = PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8)
         val peerNonceBytes = peer.nonce.toByteArray(Charsets.UTF_8)
+
+        // Port prediction: for SEQUENTIAL (incremental symmetric) NATs the
+        // peer's NEXT mapping often lands a few hops from the advertised one.
+        // Sweep a small window around the advertised port so the handshake
+        // still hits if the peer's NAT incremented since the candidate was
+        // gathered (RFC 5128 N+1 style).
+        val targets = buildList {
+            add(base)
+            if (local.portAllocation == PortBehaviorProbe.PortAllocation.SEQUENTIAL) {
+                val host = base.address
+                val p = base.port
+                for (offset in 1..P2pConfig.PORT_PREDICTION_WINDOW) {
+                    add(InetSocketAddress(host, p + offset))
+                    add(InetSocketAddress(host, p - offset))
+                }
+            }
+        }
 
         val established = CompletableDeferred<InetSocketAddress?>()
         val deadline = System.currentTimeMillis() + P2pConfig.PUNCH_TOTAL_TIMEOUT_MS
 
-        // Sender: keep poking the peer's mapped endpoint.
+        // Sender: keep poking the peer's mapped endpoint(s).
         val sender = scope.launch(Dispatchers.IO) {
             while (isActive && System.currentTimeMillis() < deadline) {
-                try {
-                    socket.send(DatagramPacket(handshake, handshake.size, target))
-                } catch (_: Exception) { }
+                for (target in targets) {
+                    try {
+                        socket.send(DatagramPacket(handshake, handshake.size, target))
+                    } catch (_: Exception) { }
+                }
                 delay(P2pConfig.PUNCH_PROBE_INTERVAL_MS)
             }
         }
@@ -393,6 +467,153 @@ class NatTraversalEngine(
 
         Log.i(TAG, "UDP punch succeeded via $peerEndpoint")
         return UdpLink(socket, peerEndpoint, onFrame, scope)
+    }
+
+    // ------------------------------------------------------------------
+    // Tier 1 fallback: IPv6 UDP punch
+    //
+    // Cellular carriers often block INBOUND TCP on the global IPv6 address,
+    // so the IPv6 TCP direct tier fails even though both peers have IPv6.
+    // Outbound UDP usually still opens a firewall pinhole: both sides send
+    // their handshake datagram to the peer's IPv6 address (on the peer's
+    // advertised IPv6 UDP port) and the pinholes cross, establishing a UDP
+    // link. No NAT mapping is involved on IPv6 - it is pure firewall
+    // traversal.
+    // ------------------------------------------------------------------
+
+    private suspend fun tryIpv6UdpPunch(
+        peer: PunchCandidate,
+        onFrame: (ByteArray) -> Unit
+    ): UdpLink? {
+        val local = profile ?: return null
+        val peerV6 = peer.ipv6Global ?: return null
+        val peerV6Port = peer.ipv6UdpPort
+        if (peerV6Port <= 0) return null
+        val v6Socket = ipv6UdpSocket ?: return null
+
+        val handshake = PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8)
+        val peerNonceBytes = peer.nonce.toByteArray(Charsets.UTF_8)
+        val target = InetSocketAddress(peerV6.address, peerV6Port)
+
+        val established = CompletableDeferred<InetSocketAddress?>()
+        val deadline = System.currentTimeMillis() + P2pConfig.PUNCH_TOTAL_TIMEOUT_MS
+
+        // Sender: keep poking the peer's IPv6 UDP port.
+        val sender = scope.launch(Dispatchers.IO) {
+            while (isActive && System.currentTimeMillis() < deadline) {
+                try {
+                    v6Socket.send(DatagramPacket(handshake, handshake.size, target))
+                } catch (_: Exception) { }
+                delay(P2pConfig.PUNCH_PROBE_INTERVAL_MS)
+            }
+        }
+
+        // Receiver: watch for the peer's handshake (its own nonce proves the
+        // pinhole is open back to us).
+        val receiver = scope.launch(Dispatchers.IO) {
+            val buf = ByteArray(2048)
+            while (isActive && System.currentTimeMillis() < deadline) {
+                val packet = DatagramPacket(buf, buf.size)
+                try {
+                    v6Socket.soTimeout = 500
+                    v6Socket.receive(packet)
+                } catch (e: SocketTimeoutException) {
+                    continue
+                } catch (e: Exception) {
+                    break
+                }
+                val data = buf.copyOf(packet.length)
+                if (isHandshake(data, peerNonceBytes)) {
+                    val source = InetSocketAddress(packet.address, packet.port)
+                    try {
+                        v6Socket.send(DatagramPacket(handshake, handshake.size, source))
+                    } catch (_: Exception) { }
+                    established.complete(source)
+                    return@launch
+                }
+            }
+            if (!established.isCompleted) established.complete(null)
+        }
+
+        val peerEndpoint = established.await()
+        sender.cancelAndJoin()
+        receiver.cancelAndJoin()
+        if (peerEndpoint == null) return null
+
+        Log.i(TAG, "IPv6 UDP punch succeeded via $peerEndpoint")
+        return UdpLink(v6Socket, peerEndpoint, onFrame, scope)
+    }
+
+    // ------------------------------------------------------------------
+    // Tier 3: TCP Simultaneous Open with Birthday Attack
+    //
+    // For symmetric NATs (esp. China Mobile CGNAT / campus NAT4) the mapped
+    // port is unpredictable, so a single-port simultaneous-open almost never
+    // hits. Instead both sides BIND + CONNECT from the SAME shared port range
+    // concurrently: each outbound SYN opens a NAT mapping for the peer's
+    // incoming SYN, and matching (port, port) pairs cross in transit
+    // (Birthday Attack). Ports are staggered with jitter to dodge CGNAT
+    // rate limiting.
+    // ------------------------------------------------------------------
+
+    private suspend fun tryTsoPunch(
+        peerIp: InetAddress,
+        peerNonce: String,
+        onFrame: (ByteArray) -> Unit
+    ): TcpLink? {
+        val local = profile ?: return null
+        val handshake = PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8)
+        val peerNonceBytes = peerNonce.toByteArray(Charsets.UTF_8)
+
+        val portCount = when (local.portAllocation) {
+            PortBehaviorProbe.PortAllocation.RANDOM -> P2pConfig.TSO_PORT_COUNT_RANDOM
+            else -> P2pConfig.TSO_PORT_COUNT
+        }
+        val ports = (P2pConfig.TSO_PORT_BASE until P2pConfig.TSO_PORT_BASE + portCount).toList()
+
+        val established = CompletableDeferred<TcpLink?>()
+        val jobs = ports.map { port ->
+            scope.launch(Dispatchers.IO) {
+                // Jitter: stagger each attempt so CGNAT cannot rate-limit us.
+                try {
+                    delay((0..P2pConfig.TSO_JITTER_MS).random())
+                } catch (_: Exception) { }
+                val socket = Socket()
+                try {
+                    socket.tcpNoDelay = true
+                    socket.keepAlive = true
+                    // BIND the same local port we are about to dial so the
+                    // peer's SYN to that port finds our mapping (and vice
+                    // versa). If the local port is taken, skip this candidate.
+                    try {
+                        socket.bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), port))
+                    } catch (_: Exception) {
+                        try { socket.close() } catch (_: Exception) { }
+                        return@launch
+                    }
+                    socket.connect(
+                        InetSocketAddress(peerIp, port),
+                        P2pConfig.TCP_CONNECT_TIMEOUT_MS.toInt()
+                    )
+                    val link = verifyTcpHandshake(socket, handshake, peerNonceBytes, onFrame)
+                    if (link != null) {
+                        established.complete(link)
+                        return@launch
+                    }
+                    try { socket.close() } catch (_: Exception) { }
+                } catch (e: Exception) {
+                    Log.d(TAG, "TSO port $port failed: ${e.message}")
+                    try { socket.close() } catch (_: Exception) { }
+                }
+            }
+        }
+
+        val result = withTimeoutOrNull(P2pConfig.TSO_TOTAL_TIMEOUT_MS) { established.await() }
+        jobs.forEach { it.cancel() }
+        if (result != null) {
+            Log.i(TAG, "TSO established with ${peerIp.hostAddress}")
+        }
+        return result
     }
 
     // ------------------------------------------------------------------
