@@ -185,6 +185,14 @@
   <string name="about_pow_off">工作量证明已关闭</string>
   <string name="about_pow_on">工作量证明已开启</string>
   <string name="about_pow_tip">为 Geohash 消息添加工作量证明以遏制垃圾信息。</string>
+  <string name="about_live_ptt_title">实时对讲</string>
+  <string name="about_live_ptt_desc">在 Mesh 上实时播放语音；松开按键后始终发送语音便签</string>
+  <string name="about_p2p_direct_title">互联网 P2P 直连</string>
+  <string name="about_p2p_direct_desc">NAT 允许时通过互联网直连；否则回退到 Nostr 中继</string>
+  <string name="about_stun_servers">STUN 服务器</string>
+  <string name="about_stun_desc">用于 NAT 发现的反射器；逗号分隔的 host:port 列表。回退到 Nostr 中继时无需它们。</string>
+  <string name="about_stun_host_port">host:port, host:port, …</string>
+  <string name="save">保存</string>
   <string name="about_pow_difficulty">难度：%1$d 位（约 %2$s）</string>
   <string name="about_pow_difficulty_attempts">难度 %1$d 需要约 %2$s 次哈希尝试</string>
   <string name="about_pow_desc_none">无需工作量证明</string>

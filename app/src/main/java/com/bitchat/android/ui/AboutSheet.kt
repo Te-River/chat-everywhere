@@ -570,8 +570,8 @@ fun AboutSheet(
 
                                     SettingsToggleRow(
                                         icon = Icons.Filled.Mic,
-                                        title = "Live push-to-talk",
-                                        subtitle = "Play voice bursts live on the mesh; voice notes are always sent on release",
+                                        title = stringResource(R.string.about_live_ptt_title),
+                                        subtitle = stringResource(R.string.about_live_ptt_desc),
                                         checked = liveVoiceEnabled,
                                         onCheckedChange = { enabled ->
                                             liveVoiceEnabled = enabled
@@ -638,8 +638,8 @@ fun AboutSheet(
                                     // Nostr relays remain the fallback when punching fails).
                                     SettingsToggleRow(
                                         icon = Icons.Filled.Public,
-                                        title = "Internet P2P direct",
-                                        subtitle = "Connect directly over the internet when NAT allows; falls back to Nostr relays otherwise",
+                                        title = stringResource(R.string.about_p2p_direct_title),
+                                        subtitle = stringResource(R.string.about_p2p_direct_desc),
                                         checked = p2pEnabled,
                                         onCheckedChange = { enabled ->
                                             p2pEnabled = enabled
@@ -698,14 +698,14 @@ fun AboutSheet(
                                         Spacer(modifier = Modifier.width(16.dp))
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = "STUN servers",
+                                                text = stringResource(R.string.about_stun_servers),
                                                 fontFamily = BitchatFontFamily,
                                                 fontSize = 14.sp,
                                                 fontWeight = FontWeight.Medium,
                                                 color = colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "Reflectors for NAT discovery; comma-separated host:port list. Falling back to Nostr relays never requires them.",
+                                                text = stringResource(R.string.about_stun_desc),
                                                 fontFamily = BitchatFontFamily,
                                                 fontSize = 12.sp,
                                                 color = colorScheme.onSurfaceVariant,
@@ -724,12 +724,12 @@ fun AboutSheet(
                                     if (showStunDialog) {
                                         AlertDialog(
                                             onDismissRequest = { showStunDialog = false },
-                                            title = { Text("STUN servers", style = MaterialTheme.typography.titleMedium) },
+                                            title = { Text(stringResource(R.string.about_stun_servers), style = MaterialTheme.typography.titleMedium) },
                                             text = {
                                                 OutlinedTextField(
                                                     value = stunInput,
                                                     onValueChange = { stunInput = it },
-                                                    label = { Text("host:port, host:port, …") },
+                                                    label = { Text(stringResource(R.string.about_stun_host_port)) },
                                                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                                                         fontFamily = BitchatFontFamily
                                                     ),
@@ -743,10 +743,10 @@ fun AboutSheet(
                                                 TextButton(onClick = {
                                                     com.bitchat.android.internetp2p.P2pPreferenceManager.setStunServers(stunInput)
                                                     showStunDialog = false
-                                                }) { Text("Save") }
+                                                }) { Text(stringResource(R.string.save)) }
                                             },
                                             dismissButton = {
-                                                TextButton(onClick = { showStunDialog = false }) { Text("Cancel") }
+                                                TextButton(onClick = { showStunDialog = false }) { Text(stringResource(R.string.cancel)) }
                                             }
                                         )
                                     }
