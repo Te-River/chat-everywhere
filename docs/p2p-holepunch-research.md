@@ -130,3 +130,44 @@ STUN（stun.miwifi/cloudflare/l.google）在移动数据下全部不可达。
 - holepunch.to / hyperdht：<https://github.com/holepunchto/hyperdht>
 - NetPiculet 蜂窝 NAT 研究：<https://cs.ucr.edu/~zhiyunq/pub/sigcomm11_netpiculet.pdf>
 - 中国移动 NAT 实测讨论：<https://www.v2ex.com/t/968663>
+
+## 六、中国互联网环境专项（2026-08 补充调研）
+
+### 6.1 三大运营商家宽 / 移动数据实测
+
+| 运营商 | IPv4 公网 | IPv4 常用端口 | IPv6 公网 | IPv6 常用端口 |
+|---|---|---|---|---|
+| 中国电信 | 可申请 | 禁用 80/443 | 有 | 未禁用（80/443 可用） |
+| 中国联通 | 可申请 | 禁用 80/443 | 有 | 未禁用 |
+| 中国移动 | 几乎无 | — | 有 | 未禁用 |
+
+- 电信/联通家宽：IPv6 入站**部分地区可用**（北京联通封 v6 入站、深圳电信联通可入站）；
+- **移动手机卡 IPv4 为 NAT4**（对称），双 NAT4 打洞基本无法成功；
+- 移动 NAT 对 remote_addr **哈希随机分区**（V2EX 实测确认：同一 local 端口对两个远端映射端口完全随机，无法预测）；
+- 三大运营商均有 IPv6，**移动数据/家宽 IPv6 入站限制相对宽松** → IPv6 直连/打洞是移动场景最佳路径。
+
+### 6.2 运营商对 UDP 的 QoS 劣化（比 NAT 更严重的问题）
+
+- **V2EX 实测（山东，2026-06）**：联通↔移动之间 Tailscale 直连 UDP 路径在 **3Mbps 开始丢包、5Mbps 丢包 40%**；同路径公网 TCP 能冲 50-85Mbps → **UDP 被运营商针对性 QoS**；
+- **北京移动**对 UDP 高强度 QoS（EasyTier issue #440）：UDP 大包被限速限流，**TCP 基本不 QoS**；
+- 结论：中国移动/联通对 **UDP 限速劣化普遍存在** → 打洞成功只是第一步，**长连接数据面应优先 TCP**（或 KCP/QUIC 代理），UDP 只用于握手/打洞阶段。
+
+### 6.3 国内可用 STUN（替代被墙/不可达的 Google STUN）
+
+- 实测可连：**stun.miwifi.com:3478**、**stun.hitv.com:3478**（小米/湖南卫视 CDN）；
+- 自建：coturn（Docker，`--no-auth` 模式即可）、InStun（单 IP 云服务器可部署，解决 RFC 5780 需双 IP 的问题）；
+- 我们默认列表已含 stun.miwifi.com（首项）——实机 STUN 失败更可能是**移动数据 UDP 被限**而非服务器不可达。
+
+### 6.4 针对国内网络的对策（EasyTier / Tailscale 实践印证）
+
+- **多传输协议回退**：EasyTier 支持 TCP/UDP/WebSocket/WSS/QUIC/KCP/FakeTCP——国内网络 **TCP 优先**（打洞用 UDP，数据面可切 TCP/QUIC/KCP）；
+- **UDP 打洞开关**：`--disable-udp-hole-punching` / `--disable-tcp-hole-punching` / `--disable-sym-hole-punching`（对称 NAT 打洞基于端口预测/生日攻击，可能被运营商识别阻断——与我们 TSO 方案一致）；
+- **自建 DERP/中继**：国内云主机（1C1G 轻量即可）+ 3478/udp(STUN) + 443/tcp，延迟从 300ms(境外) → 20ms 内；
+- **KCP/QUIC 代理**：高丢包环境 KCP 显著改善（UDP 丢包 15% → 稳定），QUIC BBR 高丢包下带宽更高。
+
+### 6.5 对本项目的落地建议（结合国内实测）
+
+1. **探测阶段**：STUN 失败不阻塞（已实现）；移动数据 NAT4+UDP 受限时，`PortBehaviorProbe` 会判 `RANDOM` → 自动走 TSO（已实现）；
+2. **打洞阶段**：UDP 打洞仅用于建立——成功后**链路保活/数据面考虑 TCP 化**（当前 P2pLink 已支持 UdpLink/TcpLink，后续可加"UDP 打洞成功后升级 TcpLink"或 QUIC 代理）；
+3. **IPv6 是移动场景主路径**：移动 IPv6 入站限制宽松，`Tier 1b IPv6 UDP 打洞` 价值最大（已实现）；
+4. **兜底**：Nostr relay（用户自控）即"国内自建中继"的等价物——无服务器约束下这是唯一合规兜底。

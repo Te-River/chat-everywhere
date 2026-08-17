@@ -674,13 +674,52 @@ fun AboutSheet(
                                     )
 
                                     // STUN server configuration for the internet P2P channel.
-                                    SettingsToggleRow(
-                                        icon = Icons.Filled.Public,
-                                        title = "STUN servers",
-                                        subtitle = "Reflectors for NAT discovery; comma-separated host:port list. Falling back to Nostr relays never requires them.",
-                                        checked = false,
-                                        onCheckedChange = { showStunDialog = true }
-                                    )
+                                    // Uses a dedicated clickable row (NOT SettingsToggleRow,
+                                    // which shares its interaction source with a Switch and
+                                    // renders a misleading "off" switch): this is a config
+                                    // entry, not a toggle.
+                                    val rowInteractionSource = remember { MutableInteractionSource() }
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable(
+                                                interactionSource = rowInteractionSource,
+                                                indication = null
+                                            ) { showStunDialog = true }
+                                            .padding(horizontal = 16.dp, vertical = 13.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Public,
+                                            contentDescription = null,
+                                            tint = colorScheme.primary,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(16.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "STUN servers",
+                                                fontFamily = BitchatFontFamily,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = "Reflectors for NAT discovery; comma-separated host:port list. Falling back to Nostr relays never requires them.",
+                                                fontFamily = BitchatFontFamily,
+                                                fontSize = 12.sp,
+                                                color = colorScheme.onSurfaceVariant,
+                                                lineHeight = 17.sp
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(16.dp))
+                                        Icon(
+                                            imageVector = Icons.Filled.ChevronRight,
+                                            contentDescription = null,
+                                            tint = colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
 
                                     if (showStunDialog) {
                                         AlertDialog(

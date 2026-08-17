@@ -394,7 +394,7 @@ class NatTraversalEngine(
         socket: DatagramSocket,
         peer: PunchCandidate,
         onFrame: (ByteArray) -> Unit
-    ): UdpLink? {
+    ): P2pLink? {
         val local = profile ?: return null
         val base = peer.mappedAddress ?: return null
         val handshake = PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8)
@@ -466,6 +466,24 @@ class NatTraversalEngine(
         if (peerEndpoint == null) return null
 
         Log.i(TAG, "UDP punch succeeded via $peerEndpoint")
+        // Carriers (esp. China Mobile/Unicom) QoS-throttle UDP hard while TCP
+        // is mostly untouched, so once the punch lands, briefly try to upgrade
+        // the data path to TCP over the same public endpoint. The fresh
+        // [BP2P][nonce] handshake re-authenticates, so security is preserved;
+        // on failure (or when the local NAT cannot do TCP) the UDP link stays.
+        val tcpUpgrade = tryTcpConnect(
+            target = peerEndpoint,
+            peerNonce = peer.nonce,
+            onFrame = onFrame,
+            accept = true,
+            timeoutMs = P2pConfig.TCP_UPGRADE_TIMEOUT_MS
+        )
+        if (tcpUpgrade != null) {
+            Log.i(TAG, "UDP punch upgraded to TCP via $peerEndpoint")
+            P2pEventLog.log("✅ UDP 打洞成功并升级为 TCP 数据面：$peerEndpoint")
+            return tcpUpgrade
+        }
+        P2pEventLog.log("✅ UDP 打洞成功：$peerEndpoint（TCP 升级未命中，保留 UDP）")
         return UdpLink(socket, peerEndpoint, onFrame, scope)
     }
 
@@ -633,7 +651,8 @@ class NatTraversalEngine(
         target: InetSocketAddress,
         peerNonce: String,
         onFrame: (ByteArray) -> Unit,
-        accept: Boolean
+        accept: Boolean,
+        timeoutMs: Long? = null
     ): TcpLink? {
         val local = profile ?: return null
         val listener = tcpListener
@@ -686,7 +705,7 @@ class NatTraversalEngine(
         }
 
         val result = withTimeoutOrNull(
-            P2pConfig.TCP_CONNECT_TIMEOUT_MS + P2pConfig.ACCEPT_WAIT_MS
+            timeoutMs ?: (P2pConfig.TCP_CONNECT_TIMEOUT_MS + P2pConfig.ACCEPT_WAIT_MS)
         ) {
             established.await()
         }

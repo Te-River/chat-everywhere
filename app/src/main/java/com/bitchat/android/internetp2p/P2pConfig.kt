@@ -49,6 +49,15 @@ object P2pConfig {
     /** Connect timeout for direct / simultaneous-open TCP attempts. */
     const val TCP_CONNECT_TIMEOUT_MS: Long = 5_000L
 
+    /**
+     * Bounded budget for upgrading a successful UDP hole punch to a TCP data
+     * path. Carriers (esp. China Mobile/Unicom) QoS-throttle UDP hard while
+     * leaving TCP mostly untouched, so after the punch lands we briefly try
+     * to re-establish the same peer over TCP (same public endpoint + fresh
+     * [BP2P][nonce] handshake). On failure the UDP link stays in use.
+     */
+    const val TCP_UPGRADE_TIMEOUT_MS: Long = 3_000L
+
     /** Timeout for the post-connect [BP2P][nonce] handshake frame exchange. */
     const val TCP_HANDSHAKE_TIMEOUT_MS: Long = 3_000L
 
