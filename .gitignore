@@ -76,4 +76,4 @@ tools/arti-build/target/
 *.hprof
 
 # Local build output (never commit)
-/Release/
+/release/
