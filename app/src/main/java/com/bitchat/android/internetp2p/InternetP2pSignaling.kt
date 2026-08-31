@@ -38,6 +38,9 @@ object InternetP2pSignaling {
      * "<senderPubkey>|<nonce>"; entries older than the window are ignored.
      */
     private val seenControlKeys = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    // Per-sender last-OFFER timestamp for the OFFER burst throttle
+    // (P2P_OFFER_BURST_WINDOW_MS). Key: "offer|<senderPubkey>".
+    private val lastOfferResponse = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private const val CONTROL_DEDUP_WINDOW_MS = 60_000L
 
     /**
@@ -133,6 +136,20 @@ object InternetP2pSignaling {
         )
         when (msg.kind) {
             P2pControlMessage.Kind.OFFER -> {
+                // Storm guard for OFFERs: a peer that (re)sends OFFERs with
+                // DIFFERENT nonces (candidate drift) bypasses
+                // isDuplicateControl, so additionally throttle to one
+                // connect/answer burst per sender per short window. This stops
+                // the OFFER storm from racing the transport's pending set and
+                // losing the direct link (the "one-way connect" bug).
+                val senderKey = "offer|$senderPubkey"
+                val now = System.currentTimeMillis()
+                val lastOfferAt = lastOfferResponse[senderKey]
+                if (lastOfferAt != null && now - lastOfferAt < P2pConfig.P2P_OFFER_BURST_WINDOW_MS) {
+                    P2pEventLog.log("收到重复 OFFER（风暴抑制）：${peerID.take(12)}… nonce=${msg.candidate.nonce.take(8)}…")
+                    return
+                }
+                lastOfferResponse[senderKey] = now
                 // Answer with our own candidate, then both sides punch.
                 scope.launch {
                     val local = t.gatherLocalCandidate()

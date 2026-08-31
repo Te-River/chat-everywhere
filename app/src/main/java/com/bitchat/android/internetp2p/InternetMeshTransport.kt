@@ -74,6 +74,10 @@ class InternetMeshTransport(
     private val linkToPeer = ConcurrentHashMap<P2pLink, String>()  // link -> noiseKeyHex
     private val ingressIds = ConcurrentHashMap<P2pLink, String>()  // link -> local ingress id
     private val pending = ConcurrentHashMap.newKeySet<String>()    // peerIDs currently connecting
+    // Every nonce observed for a peer across OFFER/ANSWER/CONNECTED signaling.
+    // The engine's accept path validates handshakes against the whole set so a
+    // nonce drift between messages cannot lose an otherwise-good direct link.
+    private val knownPeerNonces = ConcurrentHashMap<String, MutableSet<String>>()
     // mesh peer ID (16 hex, from packet.senderID) -> link key (noiseKeyHex).
     // The bridge addresses peers by their 16-hex mesh peer ID; the signaling
     // channel keys links by the stable noiseKeyHex, so both spellings must
@@ -144,6 +148,11 @@ class InternetMeshTransport(
      * [peerID] is the stable noiseKeyHex identity key.
      */
     fun connectToPeer(peerID: String, candidate: PunchCandidate) {
+        // Remember every nonce we have seen for this peer: the peer's candidate
+        // nonce can drift across OFFER/ANSWER messages, and the engine's accept
+        // path validates against the WHOLE known set so a link is not lost to a
+        // last-writer's nonce mismatch (fixes one-way "I connect, they don't").
+        knownPeerNonces.getOrPut(peerID) { mutableSetOf() }.add(candidate.nonce)
         // Already have a link for this peer (direct or via an inbound alias)?
         // Do not re-establish - treat it as connected.
         if (resolveLinkKey(peerID) != null || pending.contains(peerID)) return
@@ -179,9 +188,13 @@ class InternetMeshTransport(
         pending.add(peerID)
         scope.launch(Dispatchers.IO) {
             try {
-                val link = engine.establish(candidate, onFrame = { frame ->
-                    handleFrame(peerID, frame)
-                })
+                val link = engine.establish(
+                    candidate,
+                    onFrame = { frame ->
+                        handleFrame(peerID, frame)
+                    },
+                    peerNonces = knownPeerNonces[peerID]?.toList()
+                )
                 if (link != null) {
                     links[peerID] = link
                     linkToPeer[link] = peerID
@@ -264,6 +277,7 @@ class InternetMeshTransport(
         ingressIds.clear()
         pending.clear()
         peerAliases.clear()
+        knownPeerNonces.clear()
         engine.close()
     }
 

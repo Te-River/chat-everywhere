@@ -162,12 +162,19 @@ class NatTraversalEngine(
      * Establishes a direct link to [peer], running the tiers in order.
      * Returns null when every tier failed; the caller then falls back to Nostr.
      */
-    suspend fun establish(peer: PunchCandidate, onFrame: (ByteArray) -> Unit): P2pLink? {
+    suspend fun establish(
+        peer: PunchCandidate,
+        onFrame: (ByteArray) -> Unit,
+        peerNonces: Collection<String>? = null
+    ): P2pLink? {
         val local = probeAndGather()
         val socket = udpSocket ?: return null
         val peerLan = peer.lanEndpoint
         val peerIpv6 = peer.ipv6Global
         val peerMapped = peer.mappedAddress
+        // Tolerate candidate-nonce drift across signaling messages: accept any
+        // of the peer's known nonces during handshakes (see connectToPeer).
+        val knownNonces = (peerNonces?.takeIf { it.isNotEmpty() } ?: listOf(peer.nonce)) + peer.nonce
 
         // Tier 0: LAN direct (both peers share a private network). Fastest and
         // most reliable - no NAT traversal needed at all. Prefer this over
@@ -177,7 +184,7 @@ class NatTraversalEngine(
             P2pEventLog.log("Tier 0：尝试局域网直连 ${peerLan.address.hostAddress}")
             val link = tryTcpConnect(
                 target = peerLan,
-                peerNonce = peer.nonce,
+                peerNonces = knownNonces,
                 onFrame = onFrame,
                 accept = true
             )
@@ -195,7 +202,7 @@ class NatTraversalEngine(
             P2pEventLog.log("Tier 1：尝试 IPv6 直连 ${peerIpv6.address.hostAddress}")
             val link = tryTcpConnect(
                 target = InetSocketAddress(peerIpv6.address, peer.tcpPort),
-                peerNonce = peer.nonce,
+                peerNonces = knownNonces,
                 onFrame = onFrame,
                 accept = true
             )
@@ -247,7 +254,7 @@ class NatTraversalEngine(
             if (local.portAllocation == PortBehaviorProbe.PortAllocation.RANDOM) {
                 Log.i(TAG, "Tier 3: TSO Birthday Attack to ${tsoIp.hostAddress}")
                 P2pEventLog.log("Tier 3：尝试 TCP 同时打开（多端口生日攻击）→ ${tsoIp.hostAddress}")
-                val link = tryTsoPunch(tsoIp, peer.nonce, onFrame)
+                val link = tryTsoPunch(tsoIp, knownNonces, onFrame)
                 if (link != null) return link
                 P2pEventLog.log("Tier 3 失败：TSO 多端口攻击未成功")
             } else {
@@ -255,7 +262,7 @@ class NatTraversalEngine(
                 P2pEventLog.log("Tier 3：尝试 TCP 同时打开 → $peerMapped")
                 val link = tryTcpConnect(
                     target = peerMapped,
-                    peerNonce = peer.nonce,
+                    peerNonces = knownNonces,
                     onFrame = onFrame,
                     accept = true
                 )
@@ -473,7 +480,7 @@ class NatTraversalEngine(
         // on failure (or when the local NAT cannot do TCP) the UDP link stays.
         val tcpUpgrade = tryTcpConnect(
             target = peerEndpoint,
-            peerNonce = peer.nonce,
+            peerNonces = listOf(peer.nonce),
             onFrame = onFrame,
             accept = true,
             timeoutMs = P2pConfig.TCP_UPGRADE_TIMEOUT_MS
@@ -576,12 +583,12 @@ class NatTraversalEngine(
 
     private suspend fun tryTsoPunch(
         peerIp: InetAddress,
-        peerNonce: String,
+        peerNonces: Collection<String>,
         onFrame: (ByteArray) -> Unit
     ): TcpLink? {
         val local = profile ?: return null
         val handshake = PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8)
-        val peerNonceBytes = peerNonce.toByteArray(Charsets.UTF_8)
+        val peerNonceBytesList = peerNonces.map { it.toByteArray(Charsets.UTF_8) }
 
         val portCount = when (local.portAllocation) {
             PortBehaviorProbe.PortAllocation.RANDOM -> P2pConfig.TSO_PORT_COUNT_RANDOM
@@ -613,7 +620,7 @@ class NatTraversalEngine(
                         InetSocketAddress(peerIp, port),
                         P2pConfig.TCP_CONNECT_TIMEOUT_MS.toInt()
                     )
-                    val link = verifyTcpHandshake(socket, handshake, peerNonceBytes, onFrame)
+                    val link = verifyTcpHandshake(socket, handshake, peerNonceBytesList, onFrame)
                     if (link != null) {
                         established.complete(link)
                         return@launch
@@ -649,7 +656,7 @@ class NatTraversalEngine(
 
     private suspend fun tryTcpConnect(
         target: InetSocketAddress,
-        peerNonce: String,
+        peerNonces: Collection<String>,
         onFrame: (ByteArray) -> Unit,
         accept: Boolean,
         timeoutMs: Long? = null
@@ -657,7 +664,9 @@ class NatTraversalEngine(
         val local = profile ?: return null
         val listener = tcpListener
         val handshake = PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8)
-        val peerNonceBytes = peerNonce.toByteArray(Charsets.UTF_8)
+        val peerNonceBytesList = peerNonces
+            .map { it.toByteArray(Charsets.UTF_8) }
+            .ifEmpty { listOf("inbound".toByteArray(Charsets.UTF_8)) }
 
         val established = CompletableDeferred<TcpLink?>()
 
@@ -670,7 +679,7 @@ class NatTraversalEngine(
                     } catch (_: Exception) {
                         break
                     }
-                    val link = verifyTcpHandshake(accepted, handshake, peerNonceBytes, onFrame)
+                    val link = verifyTcpHandshake(accepted, handshake, peerNonceBytesList, onFrame)
                     if (link != null) {
                         established.complete(link)
                         return@launch
@@ -689,7 +698,7 @@ class NatTraversalEngine(
                 socket.tcpNoDelay = true
                 socket.keepAlive = true
                 socket.connect(target, P2pConfig.TCP_CONNECT_TIMEOUT_MS.toInt())
-                val link = verifyTcpHandshake(socket, handshake, peerNonceBytes, onFrame)
+                val link = verifyTcpHandshake(socket, handshake, peerNonceBytesList, onFrame)
                 if (link != null) {
                     established.complete(link)
                 } else {
@@ -720,13 +729,16 @@ class NatTraversalEngine(
     /**
      * Validates a freshly established TCP socket with the [BP2P][nonce]
      * handshake. Writes our handshake frame, reads one frame, and requires it
-     * to carry the peer's nonce. Returns a ready [TcpLink] on success or null
-     * (with the socket closed) on failure.
+     * to carry ONE of the peer's known nonces ([peerNonceBytesList]). The
+     * list tolerates OFFER/ANSWER races where the peer's candidate nonce
+     * changed between signaling messages - accepting any known nonce keeps a
+     * link from failing on the last-writer's nonce mismatch. Returns a ready
+     * [TcpLink] on success or null (with the socket closed) on failure.
      */
     private fun verifyTcpHandshake(
         socket: Socket,
         handshake: ByteArray,
-        peerNonceBytes: ByteArray,
+        peerNonceBytesList: List<ByteArray>,
         onFrame: (ByteArray) -> Unit
     ): TcpLink? {
         return try {
@@ -736,7 +748,7 @@ class NatTraversalEngine(
             val synced = SyncedSocket(socket, P2pConfig.TCP_HANDSHAKE_TIMEOUT_MS.toInt())
             synced.write(handshake)
             val frame = synced.read()
-            if (frame == null || !isHandshake(frame, peerNonceBytes)) {
+            if (frame == null || peerNonceBytesList.none { isHandshake(frame, it) }) {
                 Log.w(TAG, "TCP handshake validation failed")
                 try { socket.close() } catch (_: Exception) { }
                 null
@@ -789,7 +801,12 @@ class NatTraversalEngine(
         }
         return try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
-            for (iface in interfaces) {
+            // Deterministic order (by interface name): interface enumeration
+            // order is unspecified on Android, and a probe that returns a
+            // DIFFERENT global IPv6 each call makes the candidate drift across
+            // OFFER/ANSWER messages (observed in the field as "对方候选 IPv6
+            // 每次不同"). Sorting keeps the candidate stable.
+            for (iface in interfaces.toList().sortedBy { it.name }) {
                 if (!iface.isUp || iface.isLoopback) continue
                 findGlobalIpv6OnInterface(iface.name)?.let { return it }
             }
@@ -833,7 +850,9 @@ class NatTraversalEngine(
         return try {
             val iface = NetworkInterface.getByName(interfaceName) ?: return null
             if (!iface.isUp || iface.isLoopback) return null
-            for (addr in iface.inetAddresses) {
+            // Deterministic address order (host string) within the interface,
+            // for the same stability reasons as the interface sort above.
+            for (addr in iface.inetAddresses.toList().sortedBy { it.hostAddress }) {
                 if (addr is Inet6Address) {
                     val v6 = addr as Inet6Address
                     if (v6.isLinkLocalAddress || v6.isLoopbackAddress || v6.isSiteLocalAddress) {

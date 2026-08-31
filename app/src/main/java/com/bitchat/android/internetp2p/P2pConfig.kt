@@ -58,6 +58,15 @@ object P2pConfig {
      */
     const val TCP_UPGRADE_TIMEOUT_MS: Long = 3_000L
 
+    /**
+     * Window in which OFFERs from the SAME sender are coalesced into a single
+     * connect/answer burst. Candidate nonces can drift across signaling
+     * messages, so (sender, nonce) dedup alone does not stop an OFFER storm;
+     * this throttles it without dropping legitimate repeat attempts that fall
+     * outside the window.
+     */
+    const val P2P_OFFER_BURST_WINDOW_MS: Long = 8_000L
+
     /** Timeout for the post-connect [BP2P][nonce] handshake frame exchange. */
     const val TCP_HANDSHAKE_TIMEOUT_MS: Long = 3_000L
 
