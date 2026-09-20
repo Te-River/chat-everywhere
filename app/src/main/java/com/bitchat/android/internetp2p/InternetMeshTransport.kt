@@ -173,15 +173,25 @@ class InternetMeshTransport(
         // The OFFER candidate the generator received may not carry the same
         // nonce as the inbound handshake (e.g. it was cached earlier), so the
         // exact-key match above can miss even though an inbound link from this
-        // very peer is already up. Fall back to reusing ANY unclosed inbound
-        // link - the mesh layer still authenticates the peer over the link.
-        val anyInbound = links.entries.firstOrNull { (key, link) ->
-            key.startsWith("inbound:") && !link.isClosed
-        }
-        if (anyInbound != null) {
-            peerAliases[peerID] = anyInbound.key
-            Log.i(TAG, "Reused inbound link ${anyInbound.key} for ${peerID.take(12)}… (nonce mismatch)")
-            P2pEventLog.log("✅ 复用入站直连：${peerID.take(12)}… via ${anyInbound.value.endpointDescription}")
+        // very peer is already up. Match against ANY nonce we have seen for
+        // THIS peer (knownPeerNonces) — never against an arbitrary inbound link.
+        //
+        // Why not "any unclosed inbound link": an inbound link is keyed by the
+        // peer that dialed it and is Noise-bound to THAT peer's identity. With
+        // two or more peers, reusing some other peer's inbound link here would
+        // alias peer B onto peer A's socket — B's frames get misdelivered or
+        // dropped and B falsely reports "connected" without ever establishing.
+        // Scoping the reuse to this peer's known nonces keeps the drift
+        // tolerance while never cross-wiring two different peers.
+        val knownForPeer = knownPeerNonces[peerID].orEmpty()
+        val driftedInbound = knownForPeer
+            .asSequence()
+            .map { "inbound:$it" }
+            .firstOrNull { key -> links[key]?.isClosed == false }
+        if (driftedInbound != null) {
+            peerAliases[peerID] = driftedInbound
+            Log.i(TAG, "Reused inbound link $driftedInbound for ${peerID.take(12)}… (nonce drift)")
+            P2pEventLog.log("✅ 复用入站直连：${peerID.take(12)}… via ${links[driftedInbound]?.endpointDescription}")
             return
         }
 

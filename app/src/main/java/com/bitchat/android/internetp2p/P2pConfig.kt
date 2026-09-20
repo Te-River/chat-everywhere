@@ -73,6 +73,19 @@ object P2pConfig {
     /** How long to keep the accept path open after a failed connect. */
     const val ACCEPT_WAIT_MS: Long = 8_000L
 
+    /**
+     * `ServerSocket.accept()` poll interval. `accept()` is a blocking,
+     * NON-interruptible call: neither a coroutine cancellation nor
+     * `withTimeoutOrNull` can unblock a thread parked in it. The shared TCP
+     * listener is long-lived and is re-armed every [ACCEPT_WAIT_MS] by the
+     * inbound-listen loop and by each `tryTcpConnect`, so a plain blocking
+     * `accept()` would leak one stuck IO thread per timed-out attempt. Setting
+     * this `soTimeout` makes `accept()` return periodically (as a
+     * `SocketTimeoutException`) so every accept loop re-checks its deadline /
+     * cancellation and exits cleanly instead of parking forever.
+     */
+    const val ACCEPT_POLL_MS: Int = 500
+
     // ------------------------------------------------------------------
     // TCP Simultaneous Open (TSO) with Birthday Attack
     // ------------------------------------------------------------------

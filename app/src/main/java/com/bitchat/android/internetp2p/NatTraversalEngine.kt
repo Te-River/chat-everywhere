@@ -11,10 +11,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import com.bitchat.android.wifiaware.SyncedSocket
-import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.Inet6Address
 import java.net.InetAddress
@@ -22,7 +19,6 @@ import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.SocketTimeoutException
 import java.security.SecureRandom
 
 /**
@@ -38,9 +34,20 @@ import java.security.SecureRandom
  *  4. Nostr fallback    - returning null lets the router send over Nostr.
  *
  * Decentralization: STUN is only a reflector, never a relay; no TURN exists
- * anywhere in this design. The engine's UDP socket is the SAME socket used
- * for the STUN probe (RFC 5780 requires probe and data path to share one
- * local endpoint so the mapping stays stable).
+ * anywhere in this design.
+ *
+ * SOCKET OWNERSHIP (critical):
+ * The engine OWNS exactly two UDP sockets — one IPv4/IPv6 dual-stack punch
+ * socket and one IPv6-capable socket — each wrapped in a [UdpDemux] that runs
+ * the single `receive()` loop for that socket. RFC 5780 requires the STUN probe
+ * and the data path to share one local endpoint so the NAT mapping stays
+ * stable, so every punch, every UDP link and the inbound listener multiplex
+ * over the SAME socket. A [DatagramSocket] has one receive queue: letting a
+ * link (or two concurrent punches) call `receive()` directly makes them steal
+ * each other's datagrams (one-way / lossy chat), and letting a link `close()`
+ * it kills NAT traversal for the whole process (the cached profile would point
+ * at a dead socket). Both bugs are fixed by routing ALL receive/send through
+ * the demux and never closing the socket from a link.
  */
 class NatTraversalEngine(
     private val scope: CoroutineScope,
@@ -72,8 +79,12 @@ class NatTraversalEngine(
     )
 
     @Volatile private var profile: LocalProfile? = null
-    @Volatile private var udpSocket: DatagramSocket? = null
-    @Volatile private var ipv6UdpSocket: DatagramSocket? = null
+    // The engine-owned demuxes. udpDemux wraps the dual-stack punch socket used
+    // for STUN probing + UDP hole punching + inbound UDP. ipv6Demux wraps the
+    // IPv6-capable socket used for the IPv6 UDP punch fallback. Neither is ever
+    // closed by a link — only by [close].
+    @Volatile private var udpDemux: UdpDemux? = null
+    @Volatile private var ipv6Demux: UdpDemux? = null
     @Volatile private var tcpListener: ServerSocket? = null
 
     private val punchMutex = Mutex()
@@ -88,7 +99,6 @@ class NatTraversalEngine(
 
         val socket = socketFactory?.invoke() ?: DatagramSocket()
         socket.soTimeout = stunTimeoutMs.toInt()
-        udpSocket = socket
 
         val localEndpoint = socket.localSocketAddress as? InetSocketAddress
         val stun = StunClient(socket, stunTimeoutMs)
@@ -101,6 +111,13 @@ class NatTraversalEngine(
             PortBehaviorProbe.forSocket(stun, stunServers.first()).classify()
         } ?: PortBehaviorProbe.PortAllocation.UNKNOWN
 
+        // Probing is finished; from here the demux is the ONLY receiver on this
+        // socket. (StunClient already returned, so no receive() races with the
+        // reader we are about to start.)
+        val demux = UdpDemux(socket, scope, TAG)
+        demux.ensureReader()
+        udpDemux = demux
+
         val ipv6 = findGlobalIpv6()
 
         // IPv6-capable UDP socket used for the IPv6 UDP punch fallback (when
@@ -110,8 +127,10 @@ class NatTraversalEngine(
         if (ipv6 != null) {
             try {
                 val v6Socket = DatagramSocket(InetSocketAddress(InetAddress.getByName("::"), 0))
+                val v6Demux = UdpDemux(v6Socket, scope, TAG)
+                v6Demux.ensureReader()
+                ipv6Demux = v6Demux
                 ipv6UdpPort = v6Socket.localPort
-                ipv6UdpSocket = v6Socket
             } catch (_: Exception) {
                 ipv6UdpPort = 0
             }
@@ -131,6 +150,10 @@ class NatTraversalEngine(
                 Log.w(TAG, "Dual-stack bind failed; falling back to IPv4: ${e.message}")
                 listener.bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), 0))
             }
+            // Make accept() return periodically so the (non-interruptible) accept
+            // loops can observe their deadline / cancellation and exit instead of
+            // leaking a stuck IO thread. See P2pConfig.ACCEPT_POLL_MS.
+            try { listener.soTimeout = P2pConfig.ACCEPT_POLL_MS } catch (_: Exception) { }
         } catch (e: Exception) {
             Log.e(TAG, "TCP listener bind failed: ${e.message}")
         }
@@ -168,7 +191,7 @@ class NatTraversalEngine(
         peerNonces: Collection<String>? = null
     ): P2pLink? {
         val local = probeAndGather()
-        val socket = udpSocket ?: return null
+        val demux = udpDemux ?: return null
         val peerLan = peer.lanEndpoint
         val peerIpv6 = peer.ipv6Global
         val peerMapped = peer.mappedAddress
@@ -213,7 +236,7 @@ class NatTraversalEngine(
             if (peer.ipv6UdpPort > 0) {
                 Log.i(TAG, "Tier 1b: IPv6 UDP punch to ${peerIpv6.address.hostAddress}:${peer.ipv6UdpPort}")
                 P2pEventLog.log("Tier 1b：尝试 IPv6 UDP 打洞 → ${peerIpv6.address.hostAddress}:${peer.ipv6UdpPort}")
-                val v6Link = tryIpv6UdpPunch(peer, onFrame)
+                val v6Link = tryIpv6UdpPunch(peer, knownNonces, onFrame)
                 if (v6Link != null) return v6Link
                 P2pEventLog.log("Tier 1b 失败：IPv6 UDP 打洞未成功")
             }
@@ -234,7 +257,7 @@ class NatTraversalEngine(
         if (udpViable && peerMapped != null) {
             Log.i(TAG, "Tier 2: UDP punch to $peerMapped")
             P2pEventLog.log("Tier 2：尝试 UDP 打洞 → $peerMapped")
-            val link = tryUdpPunch(socket, peer, onFrame)
+            val link = tryUdpPunch(demux, peer, knownNonces, onFrame)
             if (link != null) return link
             P2pEventLog.log("Tier 2 失败：UDP 打洞未成功")
         } else {
@@ -280,9 +303,13 @@ class NatTraversalEngine(
 
     /** Releases all local resources. */
     fun close() {
-        try { udpSocket?.close() } catch (_: Exception) { }
+        // Closing a demux closes its socket and cancels its single reader. The
+        // engine — never a link — owns these sockets.
+        try { udpDemux?.close() } catch (_: Exception) { }
+        try { ipv6Demux?.close() } catch (_: Exception) { }
         try { tcpListener?.close() } catch (_: Exception) { }
-        udpSocket = null
+        udpDemux = null
+        ipv6Demux = null
         tcpListener = null
         profile = null
     }
@@ -298,6 +325,11 @@ class NatTraversalEngine(
     // known candidate, so we accept any datagram/TCP frame carrying PUNCH_MAGIC
     // and establish the link to its source; the mesh layer still authenticates
     // the peer via the Noise handshake over the link.
+    //
+    // UDP and TCP inbound are RACED concurrently (both bounded by
+    // ACCEPT_WAIT_MS). Doing them sequentially left a window where, while
+    // blocked in accept(), no UDP handshake waiter was attached and the
+    // importer's UDP punch was silently dropped — another one-way failure.
     // ------------------------------------------------------------------
 
     /** A link established by listening, plus the peer's nonce learned from
@@ -306,91 +338,99 @@ class NatTraversalEngine(
 
     suspend fun listenForInbound(onFrame: (ByteArray) -> Unit): InboundLink? {
         val local = probeAndGather()
-        val socket = udpSocket ?: return null
+        val demux = udpDemux
         val handshake = PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8)
-        val deadline = System.currentTimeMillis() + P2pConfig.ACCEPT_WAIT_MS
 
-        // UDP: watch for any inbound handshake carrying the magic.
-        val udpDeferred = CompletableDeferred<InboundLink?>()
-        val udpJob = scope.launch(Dispatchers.IO) {
-            val buf = ByteArray(2048)
-            while (isActive && System.currentTimeMillis() < deadline) {
-                val packet = DatagramPacket(buf, buf.size)
+        val result = CompletableDeferred<InboundLink?>()
+        val jobs = mutableListOf<Job>()
+
+        // UDP: a wildcard handshake waiter on the shared socket. The demux
+        // echoes our nonce on match so the importer confirms the path.
+        if (demux != null) {
+            val waiter = UdpDemux.HandshakeWaiter(
+                expectNonceBytesList = emptyList(),
+                echoBytes = handshake
+            )
+            demux.attach(waiter)
+            jobs += scope.launch(Dispatchers.IO) {
                 try {
-                    socket.soTimeout = 500
-                    socket.receive(packet)
-                } catch (e: SocketTimeoutException) {
-                    continue
-                } catch (e: Exception) {
-                    break
-                }
-                val data = buf.copyOf(packet.length)
-                if (startsWithMagic(data)) {
-                    val source = InetSocketAddress(packet.address, packet.port)
-                    // Echo our own handshake so the importer confirms the path.
-                    try {
-                        socket.send(DatagramPacket(handshake, handshake.size, source))
-                    } catch (_: Exception) { }
-                    val peerNonce = extractNonce(data)
-                    udpDeferred.complete(InboundLink(UdpLink(socket, source, onFrame, scope), peerNonce))
-                    return@launch
+                    val match = waiter.await(P2pConfig.ACCEPT_WAIT_MS)
+                    if (match != null) {
+                        val link = makeUdpLink(demux, match.source, onFrame)
+                        // TCP branch may have won the race; close our link if so.
+                        if (!result.complete(InboundLink(link, extractNonceAfterMagic(match.raw)))) {
+                            link.close()
+                        }
+                    }
+                } finally {
+                    demux.detach(waiter)
                 }
             }
-            if (!udpDeferred.isCompleted) udpDeferred.complete(null)
         }
-
-        val udpLink = withTimeoutOrNull(P2pConfig.ACCEPT_WAIT_MS) { udpDeferred.await() }
-        if (udpLink != null) {
-            udpJob.cancel()
-            Log.i(TAG, "Inbound UDP link established via ${udpLink.link.endpointDescription}")
-            return udpLink
-        }
-        udpJob.cancel()
 
         // TCP: accept one connection whose first frame carries the magic.
+        // accept() is non-interruptible, so we poll it against a wall-clock
+        // deadline (the listener has ACCEPT_POLL_MS soTimeout); a poll timeout
+        // just loops, any other error stops us. This keeps the thread from
+        // parking forever after the outer window expires.
         val listener = tcpListener
-        if (listener == null) return null
-        val accepted = try {
-            withTimeoutOrNull(P2pConfig.ACCEPT_WAIT_MS) { listener.accept() }
-        } catch (_: Exception) {
-            null
-        } ?: return null
-        val synced = SyncedSocket(accepted, P2pConfig.TCP_HANDSHAKE_TIMEOUT_MS.toInt())
-        val frame = try { synced.read() } catch (_: Exception) { null }
-        if (frame == null || !startsWithMagic(frame)) {
-            try { accepted.close() } catch (_: Exception) { }
-            return null
+        if (listener != null) {
+            jobs += scope.launch(Dispatchers.IO) {
+                val deadline = System.currentTimeMillis() + P2pConfig.ACCEPT_WAIT_MS
+                var accepted: Socket? = null
+                while (isActive && System.currentTimeMillis() < deadline) {
+                    val s = try {
+                        listener.accept()
+                    } catch (e: java.net.SocketTimeoutException) {
+                        continue // poll tick: re-check deadline / cancellation
+                    } catch (_: Exception) {
+                        break
+                    }
+                    accepted = s
+                    break
+                }
+                val sock = accepted ?: return@launch
+                val synced = SyncedSocket(sock, P2pConfig.TCP_HANDSHAKE_TIMEOUT_MS.toInt())
+                val frame = try { synced.read() } catch (_: Exception) { null }
+                if (frame == null || !startsWithMagic(frame)) {
+                    try { sock.close() } catch (_: Exception) { }
+                    return@launch
+                }
+                // Echo our own handshake so the initiator (which waits for our
+                // nonce after sending its own) can validate and complete the
+                // link — the TCP mirror of the UDP branch's reply.
+                try {
+                    synced.write(PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8))
+                } catch (_: Exception) { }
+                try { sock.soTimeout = SyncedSocket.DEFAULT_READ_TIMEOUT_MS.toInt() } catch (_: Exception) { }
+                val link = TcpLink(synced, onFrame, scope)
+                // complete() is the atomic winner-decider: if the UDP branch (or
+                // the outer timeout) already settled `result`, close this link
+                // instead of orphaning its fd + jobs.
+                if (!result.complete(InboundLink(link, extractNonceAfterMagic(frame)))) {
+                    link.close()
+                }
+            }
         }
-        // Echo our own handshake so the initiator (which waits for our nonce
-        // after sending its own) can validate and complete the link - the TCP
-        // mirror of the UDP branch's reply. Without this the initiator times
-        // out and reports failure even though we accepted the connection.
-        try {
-            synced.write(PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8))
-        } catch (_: Exception) { }
-        try { accepted.soTimeout = SyncedSocket.DEFAULT_READ_TIMEOUT_MS.toInt() } catch (_: Exception) { }
-        val peerNonce = extractNonce(frame)
-        val link = TcpLink(synced, onFrame, scope)
-        Log.i(TAG, "Inbound TCP link established via ${link.endpointDescription}")
-        return InboundLink(link, peerNonce)
-    }
 
-    private fun startsWithMagic(data: ByteArray): Boolean {
-        if (data.size < PUNCH_MAGIC.size) return false
-        for (i in PUNCH_MAGIC.indices) {
-            if (data[i] != PUNCH_MAGIC[i]) return false
+        // First non-null wins; bounded by the accept window (plus slack so a
+        // last-moment match is not lost to the outer timeout firing first).
+        // A sentinel completes `result` with null when the window expires. This
+        // makes `complete()` the single atomic winner-decider for EVERY producer
+        // (UDP branch, TCP branch, sentinel): whoever loses — including a
+        // producer that finishes a hair after the deadline — sees complete()
+        // return false and closes its own link, so no fd/job is ever orphaned.
+        jobs += scope.launch(Dispatchers.IO) {
+            delay(P2pConfig.ACCEPT_WAIT_MS)
+            result.complete(null)
         }
-        return true
-    }
 
-    /** Extracts the 16-byte hex nonce following the magic, or "" if absent. */
-    private fun extractNonce(data: ByteArray): String {
-        val start = PUNCH_MAGIC.size
-        return if (data.size > start) {
-            String(data, start, data.size - start, Charsets.UTF_8)
-        } else {
-            ""
+        val link = result.await()
+        jobs.forEach { it.cancel() }
+        if (link != null) {
+            Log.i(TAG, "Inbound link established via ${link.link.endpointDescription}")
         }
+        return link
     }
 
     // ------------------------------------------------------------------
@@ -398,14 +438,15 @@ class NatTraversalEngine(
     // ------------------------------------------------------------------
 
     private suspend fun tryUdpPunch(
-        socket: DatagramSocket,
+        demux: UdpDemux,
         peer: PunchCandidate,
+        peerNonces: Collection<String>,
         onFrame: (ByteArray) -> Unit
     ): P2pLink? {
         val local = profile ?: return null
         val base = peer.mappedAddress ?: return null
         val handshake = PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8)
-        val peerNonceBytes = peer.nonce.toByteArray(Charsets.UTF_8)
+        val expect = peerNonces.map { it.toByteArray(Charsets.UTF_8) }
 
         // Port prediction: for SEQUENTIAL (incremental symmetric) NATs the
         // peer's NEXT mapping often lands a few hops from the advertised one.
@@ -424,54 +465,29 @@ class NatTraversalEngine(
             }
         }
 
-        val established = CompletableDeferred<InetSocketAddress?>()
-        val deadline = System.currentTimeMillis() + P2pConfig.PUNCH_TOTAL_TIMEOUT_MS
+        // Targeted waiter: matches a handshake carrying any of the peer's known
+        // nonces, and echoes our handshake so the peer confirms the path too.
+        val waiter = UdpDemux.HandshakeWaiter(expect, echoBytes = handshake)
+        demux.attach(waiter)
 
-        // Sender: keep poking the peer's mapped endpoint(s).
+        // Sender: keep poking the peer's mapped endpoint(s) until matched.
         val sender = scope.launch(Dispatchers.IO) {
+            val deadline = System.currentTimeMillis() + P2pConfig.PUNCH_TOTAL_TIMEOUT_MS
             while (isActive && System.currentTimeMillis() < deadline) {
                 for (target in targets) {
-                    try {
-                        socket.send(DatagramPacket(handshake, handshake.size, target))
-                    } catch (_: Exception) { }
+                    demux.send(target, handshake)
                 }
                 delay(P2pConfig.PUNCH_PROBE_INTERVAL_MS)
             }
         }
 
-        // Receiver: watch for the peer's handshake (our nonce echoed back or
-        // the peer's own nonce - either proves a bidirectional path).
-        val receiver = scope.launch(Dispatchers.IO) {
-            val buf = ByteArray(2048)
-            while (isActive && System.currentTimeMillis() < deadline) {
-                val packet = DatagramPacket(buf, buf.size)
-                try {
-                    socket.soTimeout = 500
-                    socket.receive(packet)
-                } catch (e: SocketTimeoutException) {
-                    continue
-                } catch (e: Exception) {
-                    break
-                }
-                val data = buf.copyOf(packet.length)
-                if (isHandshake(data, peerNonceBytes)) {
-                    val source = InetSocketAddress(packet.address, packet.port)
-                    // Echo our own handshake back so the peer confirms too.
-                    try {
-                        socket.send(DatagramPacket(handshake, handshake.size, source))
-                    } catch (_: Exception) { }
-                    established.complete(source)
-                    return@launch
-                }
-            }
-            if (!established.isCompleted) established.complete(null)
-        }
-
-        val peerEndpoint = established.await()
+        val match = waiter.await(P2pConfig.PUNCH_TOTAL_TIMEOUT_MS)
         sender.cancelAndJoin()
-        receiver.cancelAndJoin()
-        if (peerEndpoint == null) return null
+        demux.detach(waiter)
+        waiter.cancel()
+        if (match == null) return null
 
+        val peerEndpoint = match.source
         Log.i(TAG, "UDP punch succeeded via $peerEndpoint")
         // Carriers (esp. China Mobile/Unicom) QoS-throttle UDP hard while TCP
         // is mostly untouched, so once the punch lands, briefly try to upgrade
@@ -480,7 +496,7 @@ class NatTraversalEngine(
         // on failure (or when the local NAT cannot do TCP) the UDP link stays.
         val tcpUpgrade = tryTcpConnect(
             target = peerEndpoint,
-            peerNonces = listOf(peer.nonce),
+            peerNonces = peerNonces,
             onFrame = onFrame,
             accept = true,
             timeoutMs = P2pConfig.TCP_UPGRADE_TIMEOUT_MS
@@ -491,7 +507,7 @@ class NatTraversalEngine(
             return tcpUpgrade
         }
         P2pEventLog.log("✅ UDP 打洞成功：$peerEndpoint（TCP 升级未命中，保留 UDP）")
-        return UdpLink(socket, peerEndpoint, onFrame, scope)
+        return makeUdpLink(demux, peerEndpoint, onFrame)
     }
 
     // ------------------------------------------------------------------
@@ -508,65 +524,61 @@ class NatTraversalEngine(
 
     private suspend fun tryIpv6UdpPunch(
         peer: PunchCandidate,
+        peerNonces: Collection<String>,
         onFrame: (ByteArray) -> Unit
     ): UdpLink? {
         val local = profile ?: return null
         val peerV6 = peer.ipv6Global ?: return null
         val peerV6Port = peer.ipv6UdpPort
         if (peerV6Port <= 0) return null
-        val v6Socket = ipv6UdpSocket ?: return null
+        val demux = ipv6Demux ?: return null
 
         val handshake = PUNCH_MAGIC + local.nonce.toByteArray(Charsets.UTF_8)
-        val peerNonceBytes = peer.nonce.toByteArray(Charsets.UTF_8)
+        val expect = peerNonces.map { it.toByteArray(Charsets.UTF_8) }
         val target = InetSocketAddress(peerV6.address, peerV6Port)
 
-        val established = CompletableDeferred<InetSocketAddress?>()
-        val deadline = System.currentTimeMillis() + P2pConfig.PUNCH_TOTAL_TIMEOUT_MS
+        val waiter = UdpDemux.HandshakeWaiter(expect, echoBytes = handshake)
+        demux.attach(waiter)
 
-        // Sender: keep poking the peer's IPv6 UDP port.
         val sender = scope.launch(Dispatchers.IO) {
+            val deadline = System.currentTimeMillis() + P2pConfig.PUNCH_TOTAL_TIMEOUT_MS
             while (isActive && System.currentTimeMillis() < deadline) {
-                try {
-                    v6Socket.send(DatagramPacket(handshake, handshake.size, target))
-                } catch (_: Exception) { }
+                demux.send(target, handshake)
                 delay(P2pConfig.PUNCH_PROBE_INTERVAL_MS)
             }
         }
 
-        // Receiver: watch for the peer's handshake (its own nonce proves the
-        // pinhole is open back to us).
-        val receiver = scope.launch(Dispatchers.IO) {
-            val buf = ByteArray(2048)
-            while (isActive && System.currentTimeMillis() < deadline) {
-                val packet = DatagramPacket(buf, buf.size)
-                try {
-                    v6Socket.soTimeout = 500
-                    v6Socket.receive(packet)
-                } catch (e: SocketTimeoutException) {
-                    continue
-                } catch (e: Exception) {
-                    break
-                }
-                val data = buf.copyOf(packet.length)
-                if (isHandshake(data, peerNonceBytes)) {
-                    val source = InetSocketAddress(packet.address, packet.port)
-                    try {
-                        v6Socket.send(DatagramPacket(handshake, handshake.size, source))
-                    } catch (_: Exception) { }
-                    established.complete(source)
-                    return@launch
-                }
-            }
-            if (!established.isCompleted) established.complete(null)
-        }
-
-        val peerEndpoint = established.await()
+        val match = waiter.await(P2pConfig.PUNCH_TOTAL_TIMEOUT_MS)
         sender.cancelAndJoin()
-        receiver.cancelAndJoin()
-        if (peerEndpoint == null) return null
+        demux.detach(waiter)
+        waiter.cancel()
+        if (match == null) return null
 
+        val peerEndpoint = match.source
         Log.i(TAG, "IPv6 UDP punch succeeded via $peerEndpoint")
-        return UdpLink(v6Socket, peerEndpoint, onFrame, scope)
+        return makeUdpLink(demux, peerEndpoint, onFrame)
+    }
+
+    /**
+     * Builds a [UdpLink] that shares the engine-owned socket via [demux]. The
+     * link neither reads from nor closes the socket: it sends through the
+     * demux and unregisters itself on close (the socket stays alive for other
+     * links and future punches).
+     */
+    private fun makeUdpLink(
+        demux: UdpDemux,
+        peer: InetSocketAddress,
+        onFrame: (ByteArray) -> Unit
+    ): UdpLink {
+        val link = UdpLink(
+            peerEndpoint = peer,
+            onFrame = onFrame,
+            scope = scope,
+            sendDatagram = { target, bytes -> demux.send(target, bytes) },
+            onClosed = { demux.unregister(peer) }
+        )
+        demux.register(peer, link)
+        return link
     }
 
     // ------------------------------------------------------------------
@@ -622,7 +634,10 @@ class NatTraversalEngine(
                     )
                     val link = verifyTcpHandshake(socket, handshake, peerNonceBytesList, onFrame)
                     if (link != null) {
-                        established.complete(link)
+                        // Several ports race; only one wins. Close any link that
+                        // loses the race (or that completes after the caller's
+                        // timeout already gave up) so its fd + jobs are not leaked.
+                        if (!established.complete(link)) link.close()
                         return@launch
                     }
                     try { socket.close() } catch (_: Exception) { }
@@ -633,8 +648,18 @@ class NatTraversalEngine(
             }
         }
 
-        val result = withTimeoutOrNull(P2pConfig.TSO_TOTAL_TIMEOUT_MS) { established.await() }
+        // Timeout sentinel: completes `established` with null when the budget
+        // expires, so a port that succeeds a hair later sees complete() return
+        // false and closes its own link (no orphaned fd/jobs). complete() is the
+        // single atomic winner-decider across all ports and this sentinel.
+        val timeoutJob = scope.launch(Dispatchers.IO) {
+            delay(P2pConfig.TSO_TOTAL_TIMEOUT_MS)
+            established.complete(null)
+        }
+
+        val result = established.await()
         jobs.forEach { it.cancel() }
+        timeoutJob.cancel()
         if (result != null) {
             Log.i(TAG, "TSO established with ${peerIp.hostAddress}")
         }
@@ -671,17 +696,27 @@ class NatTraversalEngine(
         val established = CompletableDeferred<TcpLink?>()
 
         // Accept path: keep accepting until a handshake-validated socket wins.
+        // The listener polls (ACCEPT_POLL_MS soTimeout), so a poll timeout must
+        // CONTINUE the loop, not break it; only a real error (e.g. the listener
+        // was closed) ends the accept path. This also lets the loop observe
+        // cancellation promptly instead of parking in a non-interruptible
+        // accept() — closing the pre-existing stuck-thread leak.
         val acceptJob: Job? = if (accept && listener != null) {
             scope.launch(Dispatchers.IO) {
                 while (isActive && !established.isCompleted) {
                     val accepted = try {
                         listener.accept()
+                    } catch (e: java.net.SocketTimeoutException) {
+                        continue // poll tick
                     } catch (_: Exception) {
                         break
                     }
                     val link = verifyTcpHandshake(accepted, handshake, peerNonceBytesList, onFrame)
                     if (link != null) {
-                        established.complete(link)
+                        // The connect path may have won the race while we were
+                        // validating; complete() returns false then, and we must
+                        // close OUR link or leak its fd + read/keepalive jobs.
+                        if (!established.complete(link)) link.close()
                         return@launch
                     }
                     // Handshake failed: this socket is not our peer. Drop it and
@@ -700,7 +735,9 @@ class NatTraversalEngine(
                 socket.connect(target, P2pConfig.TCP_CONNECT_TIMEOUT_MS.toInt())
                 val link = verifyTcpHandshake(socket, handshake, peerNonceBytesList, onFrame)
                 if (link != null) {
-                    established.complete(link)
+                    // The accept path may have won the race; close our losing
+                    // link so its fd + read/keepalive jobs are not leaked.
+                    if (!established.complete(link)) link.close()
                 } else {
                     try { socket.close() } catch (_: Exception) { }
                     // Do NOT complete(null): the accept path may still win when
@@ -713,13 +750,22 @@ class NatTraversalEngine(
             }
         }
 
-        val result = withTimeoutOrNull(
-            timeoutMs ?: (P2pConfig.TCP_CONNECT_TIMEOUT_MS + P2pConfig.ACCEPT_WAIT_MS)
-        ) {
-            established.await()
+        // Timeout sentinel: completes `established` with null when the budget
+        // expires. Neither connect nor accept completes on its own failure (the
+        // other path may still win), so this sentinel is what bounds the wait.
+        // complete() is the single atomic winner-decider: a path that lands a
+        // hair after the deadline sees complete() return false and closes its
+        // own link, so no fd/jobs are ever orphaned.
+        val budget = timeoutMs ?: (P2pConfig.TCP_CONNECT_TIMEOUT_MS + P2pConfig.ACCEPT_WAIT_MS)
+        val timeoutJob = scope.launch(Dispatchers.IO) {
+            delay(budget)
+            established.complete(null)
         }
+
+        val result = established.await()
         acceptJob?.cancel()
         connectJob.cancel()
+        timeoutJob.cancel()
         if (result != null) {
             Log.i(TAG, "TCP established with $target")
         }
@@ -767,17 +813,6 @@ class NatTraversalEngine(
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
-
-    private fun isHandshake(data: ByteArray, peerNonceBytes: ByteArray): Boolean {
-        if (data.size != PUNCH_MAGIC.size + peerNonceBytes.size) return false
-        for (i in PUNCH_MAGIC.indices) {
-            if (data[i] != PUNCH_MAGIC[i]) return false
-        }
-        for (i in peerNonceBytes.indices) {
-            if (data[PUNCH_MAGIC.size + i] != peerNonceBytes[i]) return false
-        }
-        return true
-    }
 
     private fun randomNonce(): String {
         val bytes = ByteArray(16)
