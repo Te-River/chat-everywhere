@@ -99,6 +99,17 @@ val sharedSourceIncludes = listOf(
     "com/bitchat/android/services/VerificationService.kt",
     "com/bitchat/android/services/meshgraph/**",
     "com/bitchat/android/service/TransportBridgeService.kt",
+    // Minimal transitive closure of PunchCandidate, which ContactDirectory
+    // (mirrored above) imports for the P2P candidate cache. Only the pure
+    // probe/serialization leaves of the internetp2p package are mirrored:
+    // NatTraversalEngine / UdpDemux / UdpLink / TcpLink / InternetMeshTransport
+    // / signaling are phone-only and stay out of the watch build.
+    "com/bitchat/android/internetp2p/PunchCandidate.kt",
+    "com/bitchat/android/internetp2p/NatTypeDetector.kt",
+    "com/bitchat/android/internetp2p/PortBehaviorProbe.kt",
+    "com/bitchat/android/internetp2p/StunClient.kt",
+    "com/bitchat/android/internetp2p/StunMessage.kt",
+    "com/bitchat/android/internetp2p/P2pConfig.kt",
     "com/bitchat/android/nostr/Bech32.kt",
     "com/bitchat/android/nostr/GeohashAliasRegistry.kt",
     "com/bitchat/android/features/file/FileUtils.kt",

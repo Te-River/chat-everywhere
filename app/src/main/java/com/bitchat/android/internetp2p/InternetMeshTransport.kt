@@ -246,7 +246,22 @@ class InternetMeshTransport(
     suspend fun gatherLocalCandidate(): PunchCandidate? {
         return try {
             val profile = engine.probeAndGather()
-            PunchCandidate.fromProfile(profile)
+            // Conversion lives here (not in PunchCandidate) so the mirrored
+            // data class stays free of NatTraversalEngine references for the
+            // wear module's sharedSourceIncludes closure.
+            val mapped = profile.mappedAddress
+            val ipv6 = profile.ipv6Global
+            PunchCandidate(
+                nonce = profile.nonce,
+                mappedHost = mapped?.address?.hostAddress,
+                mappedPort = mapped?.port ?: 0,
+                ipv6Host = ipv6?.address?.hostAddress,
+                lanHost = profile.lanHost,
+                tcpPort = profile.tcpPort,
+                natType = profile.natType,
+                hasIpv4Mapped = mapped != null,
+                ipv6UdpPort = profile.ipv6UdpPort
+            )
         } catch (e: Exception) {
             Log.e(TAG, "gatherLocalCandidate failed: ${e.message}")
             null

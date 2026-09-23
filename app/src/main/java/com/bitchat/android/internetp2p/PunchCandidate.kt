@@ -69,22 +69,5 @@ data class PunchCandidate(
         } catch (e: Exception) {
             null
         }
-
-        /** Builds a candidate from the engine's local profile. */
-        fun fromProfile(profile: NatTraversalEngine.LocalProfile): PunchCandidate {
-            val mapped = profile.mappedAddress
-            val ipv6 = profile.ipv6Global
-            return PunchCandidate(
-                nonce = profile.nonce,
-                mappedHost = mapped?.address?.hostAddress,
-                mappedPort = mapped?.port ?: 0,
-                ipv6Host = ipv6?.address?.hostAddress,
-                lanHost = profile.lanHost,
-                tcpPort = profile.tcpPort,
-                natType = profile.natType,
-                hasIpv4Mapped = mapped != null,
-                ipv6UdpPort = profile.ipv6UdpPort
-            )
-        }
     }
 }
